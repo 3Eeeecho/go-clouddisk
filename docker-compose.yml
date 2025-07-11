@@ -1,0 +1,90 @@
+version: '3.8'
+
+services:
+  # # MySQL 数据库服务
+  # mysql:
+  #   image: mysql:8.0 # 使用 MySQL 8.0 稳定版
+  #   container_name: mysql
+  #   command:
+  #     # 将mysql8.0默认密码策略 修改为 原先 策略 (mysql8.0对其默认策略做了更改 会导致密码无法匹配) 
+  #     --default-authentication-plugin=mysql_native_password
+  #     --character-set-server=utf8mb4
+  #     --collation-server=utf8mb4_general_ci
+  #     --explicit_defaults_for_timestamp=true
+  #     --lower_case_table_names=1
+  #   restart: always
+  #   environment:
+  #     MYSQL_ROOT_PASSWORD: root # root 用户密码
+  #     MYSQL_DATABASE: "clouddisk_db"  # 数据库名称，与您之前确认的保持一致
+  #     MYSQL_USER: app_user            # 应用用户 <-- 我们为应用创建的用户
+  #     MYSQL_PASSWORD: app_password    # 应用用户密码
+  #   ports:
+  #     - "33069:3306" # 映射端口
+  #   volumes:
+  #     - mysql_data:/var/lib/mysql # 数据持久化
+  #     - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro # 挂载初始化SQL脚本
+  #   healthcheck:
+  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+  #     timeout: 20s
+  #     retries: 10
+  #     start_period: 10s
+
+  # # Redis 缓存服务
+  # redis:
+  #   image: redis:latest # 使用轻量级 Redis 镜像
+  #   container_name: redis
+  #   restart: always
+  #   ports:
+  #     - "36379:6379" # 映射端口
+  #   volumes:
+  #     - redis_data:/data # 数据持久化
+  #   healthcheck:
+  #     test: ["CMD", "redis-cli", "ping"]
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 5s
+
+  # MinIO 对象存储服务 (S3 兼容)
+  minio:
+    image: minio/minio # MinIO 镜像
+    container_name: minio
+    restart: always
+    command: server /data --console-address ":9001" # 启动命令，并开放控制台端口
+    environment:
+      MINIO_ROOT_USER: minioadmin # MinIO 管理用户
+      MINIO_ROOT_PASSWORD: minioadmin # MinIO 管理密码
+    ports:
+      - "9000:9000" # API 端口
+      - "9001:9001" # 控制台端口
+    volumes:
+      - minio_data:/data # 数据持久化
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+
+  # RabbitMQ 消息队列服务
+  rabbitmq:
+    image: rabbitmq:4.1.2-management # RabbitMQ 镜像，包含管理界面
+    container_name: rabbitmq
+    restart: always
+    environment:
+      RABBITMQ_DEFAULT_USER: rabbitmq_user # RabbitMQ 用户
+      RABBITMQ_DEFAULT_PASS: rabbitmq_password # RabbitMQ 密码
+    ports:
+      - "5673:5672" # AMQP 端口
+      - "15673:15672" # 管理界面端口
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq # 数据持久化
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      timeout: 10s
+      retries: 5
+      start_period: 5s
+
+volumes:
+  mysql_data:
+  redis_data:
+  minio_data:
+  rabbitmq_data:

@@ -1,0 +1,25 @@
+server:
+  port: "8080"
+
+mysql:
+  dsn: "root:root@tcp(localhost:3306)/clouddisk_db?charset=utf8mb4&parseTime=True&loc=Local"
+
+redis:
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+
+minio:
+  endpoint: "minio:9000"
+  access_key_id: "minioadmin"
+  secret_access_key: "minioadmin"
+  use_ssl: false
+  bucket_name: "go-clouddisk-bucket"
+
+rabbitmq:
+  url: "amqp://guest:guest@rabbitmq:5672/"
+
+jwt:
+  secret_key: "MTg5ODg2OTE1MjAyNS8zLzEyIDE4OjU0OjU3"
+  expire_minutes: 60
+  refresh_expire_hours: 168 # 7 days
