@@ -9,7 +9,7 @@ import (
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/database"
-	"github.com/gin-gonic/gin"
+	"github.com/3Eeeecho/go-clouddisk/internal/router"
 )
 
 func main() {
@@ -21,22 +21,34 @@ func main() {
 	database.InitMySQL(&config.AppConfig.MySQL)
 	defer database.CloseMySQLDB() // 确保在 main 函数退出时关闭数据库连接
 
-	// 3. 初始化 Gin 引擎
-	// 生产环境建议设置为 gin.ReleaseMode
-	gin.SetMode(gin.DebugMode)
-	router := gin.Default()
+	// 3. TODO: 初始化 Redis 连接
+	// client := database.InitRedis(&config.AppConfig.Redis)
+	// defer database.CloseRedis(client)
 
-	// TODO: 注册路由和中间件 (后续步骤会添加)
-	// router.Use(middlewares.AuthMiddleware())
-	// router.GET("/ping", func(c *gin.Context) {
-	// 	c.JSON(http.StatusOK, gin.H{"message": "pong"})
-	// })
+	// 4. TODO: 初始化 MinIO 客户端
+	// minioClient := database.InitMinIO(&config.AppConfig.MinIO)
+
+	// 5. 初始化 Gin 引擎和注册路由
+	// 将所有依赖传入 RouterConfig
+	routerCfg := router.RouterConfig{
+		DB: database.DB,
+		// Redis:  client, // 待实现
+		// Minio:  minioClient, // 待实现
+		AppCfg: config.AppConfig,
+	}
+	r := router.InitRouter(routerCfg)
 
 	// 启动 HTTP 服务器
 	addr := ":" + config.AppConfig.Server.Port
 	log.Printf("Server starting on %s\n", addr)
+	srv := &http.Server{
+		Addr:    addr,
+		Handler: r,
+	}
+
+	// 优雅关机
 	go func() {
-		if err := http.ListenAndServe(addr, router); err != nil && err != http.ErrServerClosed {
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Server failed to start: %v", err)
 		}
 	}()
