@@ -5,6 +5,7 @@ import (
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
+	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
@@ -45,20 +46,20 @@ func InitRouter(cfg RouterConfig) *gin.Engine {
 	}
 
 	// 认证后的路由 (需要 JWT 中间件)
-	// apiV1 := router.Group("/api/v1")
-	// apiV1.Use(middlewares.JWTAuthMiddleware(cfg.AppCfg.JWT.SecretKey)) // 应用 JWT 认证中间件
-	// {
-	// 	// 用户信息
-	// 	apiV1.GET("/user/info", handlers.GetUserInfo()) // 占位
+	apiV1 := router.Group("/api/v1")
+	apiV1.Use(middlewares.AuthMiddleware(config.AppConfig)) // 应用 JWT 认证中间件
+	{
+		// 	// 用户信息
+		// 	apiV1.GET("/user/info", handlers.GetUserInfo()) // 占位
 
-	// 	// 文件管理 (占位)
-	// 	fileGroup := apiV1.Group("/files")
-	// 	{
-	// 		fileGroup.POST("/upload", handlers.UploadFile())
-	// 		fileGroup.GET("/list", handlers.ListFiles())
-	// 		// ... 其他文件操作
-	// 	}
-	// }
+		// 	// 文件管理 (占位)
+		// 	fileGroup := apiV1.Group("/files")
+		// 	{
+		// 		fileGroup.POST("/upload", handlers.UploadFile())
+		// 		fileGroup.GET("/list", handlers.ListFiles())
+		// 		// ... 其他文件操作
+		// 	}
+	}
 
 	return router
 }
