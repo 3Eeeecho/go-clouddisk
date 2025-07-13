@@ -17,11 +17,17 @@ type RegisterRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 }
 
+// LoginRequest 登录请求结构体
+type LoginRequest struct {
+	Identifier string `json:"identifier" binding:"required"` // 可以是用户名或邮箱
+	Password   string `json:"password" binding:"required"`
+}
+
 // Register 处理用户注册请求
 // 这是一个闭包，用于注入依赖 (DB 和 Config)
 func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
-	authService := services.NewAuthService(userRepo)
+	authService := services.NewAuthService(userRepo, cfg)
 	return func(c *gin.Context) {
 		var req RegisterRequest
 		if err := c.ShouldBind(&req); err != nil {
@@ -54,10 +60,32 @@ func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// Login 占位函数
+// Login
 func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	userRepo := repositories.NewUserRepository(db)
+	authService := services.NewAuthService(userRepo, cfg)
 	return func(c *gin.Context) {
-		xerr.Success(c, http.StatusOK, "Login endpoint - To be implemented", nil)
+		var req LoginRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+			return
+		}
+
+		tokenString, err := authService.LoginUser(req.Identifier, req.Password)
+		if err != nil {
+			if err.Error() == "user not found" {
+				xerr.Error(c, http.StatusUnauthorized, xerr.CodeUserNotFound, "User not found")
+				return
+			}
+			if err.Error() == "invalid credentials" {
+				xerr.Error(c, http.StatusUnauthorized, xerr.CodeInvalidCredentials, "Invalid username or password")
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Failed to login")
+			return
+		}
+
+		xerr.Success(c, http.StatusOK, "Login successful", gin.H{"token": tokenString})
 	}
 }
 

@@ -52,8 +52,9 @@ type RabbitMQConfig struct {
 // JWTConfig JWT配置
 type JWTConfig struct {
 	SecretKey          string        `mapstructure:"secret_key"`
-	ExpireMinutes      time.Duration `mapstructure:"expire_minutes"` // 使用 time.Duration 更清晰
+	ExpiresIn          time.Duration `mapstructure:"expires_in"` // 使用 time.Duration 更清晰
 	RefreshExpireHours time.Duration `mapstructure:"refresh_expire_hours"`
+	Issuer             string        `mapstructure:"issuer"`
 }
 
 var AppConfig *Config // 全局应用配置实例
@@ -89,8 +90,9 @@ func LoadConfig() {
 	viper.SetDefault("minio.bucket_name", "go-clouddisk-bucket")
 	viper.SetDefault("rabbitmq.url", "amqp://guest:guest@rabbitmq:5672/")
 	viper.SetDefault("jwt.secret_key", "MTg5ODg2OTE1MjAyNS8zLzEyIDE4OjU0OjU3")
-	viper.SetDefault("jwt.expire_minutes", 60*time.Minute)       // 1小时
+	viper.SetDefault("jwt.expires_in", 60*time.Minute)           // 1小时
 	viper.SetDefault("jwt.refresh_expire_hours", 24*7*time.Hour) // 7天
+	viper.SetDefault("jwt.issuer", "go-clouddisk")
 
 	// 2. 读取配置文件
 	if err := viper.ReadInConfig(); err != nil {
@@ -110,7 +112,4 @@ func LoadConfig() {
 	}
 
 	log.Println("Configuration loaded successfully with Viper.")
-	// 可以打印部分配置验证是否加载成功
-	// fmt.Printf("Server Port: %s\n", AppConfig.Server.Port)
-	// fmt.Printf("MySQL DSN: %s\n", AppConfig.MySQL.DSN)
 }

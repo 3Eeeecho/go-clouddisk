@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"errors"
 	"log"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
@@ -38,8 +39,8 @@ func (r *userRepository) GetUserByUsername(username string) (*models.User, error
 	var user models.User
 	err := r.db.Where("username = ?", username).First(&user).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil // 用户不存在，返回 nil
+		if errors.Is(err, gorm.ErrRecordNotFound) { // 使用 errors.Is 更安全
+			return nil, gorm.ErrRecordNotFound
 		}
 		log.Printf("Error getting user by username %s: %v", username, err)
 		return nil, err
@@ -50,8 +51,8 @@ func (r *userRepository) GetUserByEmail(email string) (*models.User, error) {
 	var user models.User
 	err := r.db.Where("email = ?", email).First(&user).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return nil, nil // 用户不存在，返回 nil
+		if errors.Is(err, gorm.ErrRecordNotFound) { // 使用 errors.Is 更安全
+			return nil, gorm.ErrRecordNotFound
 		}
 		log.Printf("Error getting user by email %s: %v", email, err)
 		return nil, err

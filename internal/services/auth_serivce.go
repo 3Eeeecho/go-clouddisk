@@ -5,28 +5,31 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type AuthService interface {
 	RegisterUser(username, password, email string) (*models.User, error)
-	// LoginUser(username, password string) (string, error) // 占位
+	LoginUser(username, password string) (string, error)
 }
 
 type authService struct {
 	userRepo repositories.UserRepository
-	// jwtService JWTService // 占位
+	cfg      *config.Config
 }
 
 // 确保authService实现了AuthService的方法
 var _ AuthService = (*authService)(nil)
 
-func NewAuthService(userRepo repositories.UserRepository) AuthService {
+func NewAuthService(userRepo repositories.UserRepository, cfg *config.Config) AuthService {
 	return &authService{
 		userRepo: userRepo,
-		//jwtService: jwtService,
+		cfg:      cfg,
 	}
 }
 
@@ -74,4 +77,48 @@ func (s *authService) RegisterUser(username, password, email string) (*models.Us
 	return user, nil
 }
 
-// func (s *authService)LoginUser(username, password string) (string, error){}
+func (s *authService) LoginUser(identifier, password string) (string, error) {
+	var user *models.User // 声明 user 为指针类型，初始化为 nil
+	var err error
+
+	// 尝试通过用户名查找用户
+	user, err = s.userRepo.GetUserByUsername(identifier)
+	if err != nil { // 如果用户名查找失
+		if !errors.Is(err, gorm.ErrRecordNotFound) { // 如果不是 "记录未找到" 错误，而是其他数据库错误
+			return "", fmt.Errorf("failed to get user by username: %w", err)
+		}
+		// 如果是 gorm.ErrRecordNotFound，继续尝试通过邮箱查找
+		user, err = s.userRepo.GetUserByEmail(identifier)
+		if err != nil { // 如果邮箱查找也失败
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return "", errors.New("user not found") // 用户名和邮箱都未找到
+			}
+			return "", fmt.Errorf("failed to get user by email: %w", err) // 其他邮箱查找错误
+		}
+	}
+
+	//验证密码
+	err = bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password))
+	if err != nil {
+		if errors.Is(err, bcrypt.ErrMismatchedHashAndPassword) {
+			return "", errors.New("invalid credentials") // 密码不匹配
+		}
+		return "", fmt.Errorf("failed to compare password: %w", err)
+	}
+
+	//生成JWT Token
+	// 调用 utils 包中的 GenerateToken 函数来生成 JWT Token
+	tokenString, err := utils.GenerateToken(
+		user.ID,
+		user.Username,
+		user.Email,
+		s.cfg.JWT.SecretKey,
+		s.cfg.JWT.Issuer,
+		s.cfg.JWT.ExpiresIn,
+	)
+	if err != nil {
+		return "", fmt.Errorf("failed to generate token: %w", err)
+	}
+
+	return tokenString, nil
+}

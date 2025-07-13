@@ -39,7 +39,7 @@ func main() {
 	r := router.InitRouter(routerCfg)
 
 	// 启动 HTTP 服务器
-	addr := ":" + config.AppConfig.Server.Port
+	addr := "0.0.0.0:" + config.AppConfig.Server.Port
 	log.Printf("Server starting on %s\n", addr)
 	srv := &http.Server{
 		Addr:    addr,

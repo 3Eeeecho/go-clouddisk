@@ -21,5 +21,6 @@ rabbitmq:
 
 jwt:
   secret_key: "MTg5ODg2OTE1MjAyNS8zLzEyIDE4OjU0OjU3"
-  expire_minutes: 60
+  expires_in: 60
   refresh_expire_hours: 168 # 7 days
+  issuer: "go-clouddisk"
