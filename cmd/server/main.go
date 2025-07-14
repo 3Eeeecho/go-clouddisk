@@ -30,13 +30,7 @@ func main() {
 
 	// 5. 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig
-	routerCfg := router.RouterConfig{
-		DB: database.DB,
-		// Redis:  client, // 待实现
-		// Minio:  minioClient, // 待实现
-		AppCfg: config.AppConfig,
-	}
-	r := router.InitRouter(routerCfg)
+	r := router.InitRouter(config.AppConfig)
 
 	// 启动 HTTP 服务器
 	addr := ":" + config.AppConfig.Server.Port

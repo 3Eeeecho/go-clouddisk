@@ -40,7 +40,7 @@ func AutoMigrate() {
 	err := DB.AutoMigrate(
 		&models.User{},
 		&models.File{},
-		&models.ShareLink{}, // 如果您决定包含分享功能
+		//&models.ShareLink{}, // 如果您决定包含分享功能
 	)
 	if err != nil {
 		log.Fatalf("Failed to auto migrate database tables: %v", err)

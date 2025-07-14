@@ -36,7 +36,7 @@ func NewAuthService(userRepo repositories.UserRepository, cfg *config.Config) Au
 func (s *authService) RegisterUser(username, password, email string) (*models.User, error) {
 	//检查用户名是否存在
 	existingUser, err := s.userRepo.GetUserByUsername(username)
-	if err != nil {
+	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, fmt.Errorf("failed to check username existence: %w", err)
 	}
 	if existingUser != nil {
@@ -45,7 +45,7 @@ func (s *authService) RegisterUser(username, password, email string) (*models.Us
 
 	//检查邮箱是否存在
 	existingUser, err = s.userRepo.GetUserByEmail(email)
-	if err != nil {
+	if err != nil && err != gorm.ErrRecordNotFound {
 		return nil, fmt.Errorf("failed to check email existence: %w", err)
 	}
 	if existingUser != nil {

@@ -4,8 +4,10 @@ import (
 	"net/http"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/database"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
 	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
@@ -20,7 +22,7 @@ type RouterConfig struct {
 	AppCfg *config.Config
 }
 
-func InitRouter(cfg RouterConfig) *gin.Engine {
+func InitRouter(cfg *config.Config) *gin.Engine {
 	// 设置 Gin 模式，开发环境为 DebugMode，生产环境为 ReleaseMode
 	gin.SetMode(gin.DebugMode) // 或者根据 cfg.AppCfg.Server.Env 来设置
 
@@ -35,31 +37,41 @@ func InitRouter(cfg RouterConfig) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
-	// 注册认证相关路由
-	authGroup := router.Group("/api/v1/auth")
+	v1 := router.Group("/api/v1")
 	{
-		// 传递 DB 和 AppCfg 到 handler，或者通过依赖注入框架
-		// 这里我们暂时直接传递，后续可以优化为服务层注入
-		authGroup.POST("/register", handlers.Register(cfg.DB, cfg.AppCfg))
-		authGroup.POST("/login", handlers.Login(cfg.DB, cfg.AppCfg))  // 占位
-		authGroup.POST("/refresh", handlers.RefreshToken(cfg.AppCfg)) // 占位
+		// 认证相关路由 (无需认证)
+		authGroup := v1.Group("/auth")
+		{
+			// 传递 database.DB 和 cfg
+			authGroup.POST("/register", handlers.Register(database.DB, cfg)) // <-- 使用 database.DB
+			authGroup.POST("/login", handlers.Login(database.DB, cfg))       // <-- 使用 database.DB
+			authGroup.POST("/refresh", handlers.RefreshToken(cfg))
+		}
+
+		// 需要认证的路由组
+		authenticated := v1.Group("/")
+		authenticated.Use(middlewares.AuthMiddleware(cfg))
+
+		// 用户相关路由
+		userGroup := authenticated.Group("/users")
+		{
+			userGroup.GET("/info", handlers.GetUserInfo()) // GetUserInfo 不直接依赖 DB，但可以获取用户ID
+		}
+
+		// 文件相关路由
+		fileGroup := authenticated.Group("/files")
+		{
+			// 传递 database.DB 和 cfg
+			fileGroup.GET("/", handlers.ListUserFiles(database.DB, cfg))
+			fileGroup.POST("/upload", handlers.UploadFile(database.DB, cfg))
+			fileGroup.GET("/download/:file_id", handlers.DownloadFile(database.DB, cfg))
+			fileGroup.DELETE("/:file_id", handlers.DeleteFile(database.DB, cfg))
+		}
 	}
 
-	// 认证后的路由 (需要 JWT 中间件)
-	apiV1 := router.Group("/api/v1")
-	apiV1.Use(middlewares.AuthMiddleware(config.AppConfig)) // 应用 JWT 认证中间件
-	{
-		// 	// 用户信息
-		// 	apiV1.GET("/user/info", handlers.GetUserInfo()) // 占位
-
-		// 	// 文件管理 (占位)
-		// 	fileGroup := apiV1.Group("/files")
-		// 	{
-		// 		fileGroup.POST("/upload", handlers.UploadFile())
-		// 		fileGroup.GET("/list", handlers.ListFiles())
-		// 		// ... 其他文件操作
-		// 	}
-	}
+	router.NoRoute(func(c *gin.Context) {
+		xerr.Error(c, http.StatusNotFound, http.StatusNotFound, "Route not found")
+	})
 
 	return router
 }
