@@ -16,6 +16,7 @@ type Config struct {
 	MinIO    MinIOConfig    `mapstructure:"minio"`
 	RabbitMQ RabbitMQConfig `mapstructure:"rabbitmq"`
 	JWT      JWTConfig      `mapstructure:"jwt"`
+	Storage  StorageConfig  `mapstructure:"storage"`
 }
 
 // ServerConfig 服务器配置
@@ -57,6 +58,10 @@ type JWTConfig struct {
 	Issuer             string        `mapstructure:"issuer"`
 }
 
+type StorageConfig struct {
+	LocalBasePath string `mapstructure:"local_base_path"`
+}
+
 var AppConfig *Config // 全局应用配置实例
 
 // LoadConfig 加载配置
@@ -93,6 +98,7 @@ func LoadConfig() {
 	viper.SetDefault("jwt.expires_in", 60*time.Minute)           // 1小时
 	viper.SetDefault("jwt.refresh_expire_hours", 24*7*time.Hour) // 7天
 	viper.SetDefault("jwt.issuer", "go-clouddisk")
+	viper.SetDefault("storage.local_base_path", "./uploads/data")
 
 	// 2. 读取配置文件
 	if err := viper.ReadInConfig(); err != nil {

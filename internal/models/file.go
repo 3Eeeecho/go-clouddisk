@@ -10,7 +10,7 @@ type File struct {
 	UUID           string     `gorm:"type:varchar(36);unique;not null" json:"uuid"` // 文件在OSS中的唯一标识
 	UserID         uint64     `gorm:"not null" json:"user_id"`
 	ParentFolderID *uint64    `gorm:"default:null" json:"parent_folder_id"` // 父文件夹ID，根目录为 null
-	Name           string     `gorm:"type:varchar(255);not null" json:"name"`
+	FileName       string     `gorm:"type:varchar(255);not null" json:"filename"`
 	IsFolder       uint8      `gorm:"type:tinyint unsigned;not null;default:0" json:"is_folder"` // 1:文件夹, 0:文件
 	Size           uint64     `gorm:"type:bigint unsigned;not null;default:0" json:"size"`
 	MimeType       *string    `gorm:"type:varchar(128);default:null" json:"mime_type"`

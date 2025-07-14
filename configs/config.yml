@@ -24,3 +24,6 @@ jwt:
   expires_in: 60
   refresh_expire_hours: 168 # 7 days
   issuer: "go-clouddisk"
+
+storageconfig:
+  local_base_path: "./uploads/data"
