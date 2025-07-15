@@ -15,6 +15,11 @@ import (
 	"gorm.io/gorm"
 )
 
+type CreateFolderRequest struct {
+	FolderName     string  `json:"folder_name" binding:"required"`
+	ParentFolderID *uint64 `json:"parent_folder_id"` // 可选，根目录为 null
+}
+
 // ListUserFiles 获取用户文件列表
 func ListUserFiles(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	fileRepo := repositories.NewFileRepository(db)
@@ -148,6 +153,54 @@ func UploadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 			"oss_key":          uploadedFile.OssKey,
 			"md5_hash":         uploadedFile.MD5Hash,
 			"parent_folder_id": uploadedFile.ParentFolderID,
+		})
+	}
+}
+
+func CreateFolder(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
+	fileRepo := repositories.NewFileRepository(db)
+	userRepo := repositories.NewUserRepository(db)
+	fileService := services.NewFileService(fileRepo, userRepo, cfg)
+
+	return func(c *gin.Context) {
+		userID, exists := c.Get("userID")
+		if !exists {
+			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "User ID not found in context")
+			return
+		}
+		currentUserID, ok := userID.(uint64)
+		if !ok {
+			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Invalid user ID type in context")
+			return
+		}
+
+		var req CreateFolderRequest
+		if err := c.ShouldBindBodyWithJSON(&req); err != nil {
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, fmt.Sprintf("Invalid request payload: %v", err))
+			return
+		}
+
+		folder, err := fileService.CreateFolder(currentUserID, req.FolderName, req.ParentFolderID)
+		if err != nil {
+			if err.Error() == "parent folder not found" || err.Error() == "invalid parent folder or not a folder" {
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+				return
+			}
+			if err.Error() == "folder with this name already exists in the current directory" {
+				xerr.Error(c, http.StatusConflict, xerr.CodeResourceAlreadyExists, err.Error())
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to create folder: %v", err))
+			return
+		}
+
+		xerr.Success(c, http.StatusCreated, "Folder created successfully", gin.H{
+			"id":               folder.ID,
+			"uuid":             folder.UUID,
+			"folder_name":      folder.FileName,
+			"parent_folder_id": folder.ParentFolderID,
+			"is_folder":        folder.IsFolder,
+			"created_at":       folder.CreatedAt,
 		})
 	}
 }

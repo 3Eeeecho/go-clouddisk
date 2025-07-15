@@ -64,6 +64,7 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 			// 传递 database.DB 和 cfg
 			fileGroup.GET("/", handlers.ListUserFiles(database.DB, cfg))
 			fileGroup.POST("/upload", handlers.UploadFile(database.DB, cfg))
+			fileGroup.POST("/folder", handlers.CreateFolder(database.DB, cfg))
 			fileGroup.GET("/download/:file_id", handlers.DownloadFile(database.DB, cfg))
 			fileGroup.DELETE("/:file_id", handlers.DeleteFile(database.DB, cfg))
 		}

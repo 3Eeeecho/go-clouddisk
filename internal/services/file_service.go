@@ -20,9 +20,9 @@ import (
 type FileService interface {
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 	AddFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
+	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
 	// DeleteFile(userID uint64, fileID uint64) error
 	// GetFileForDownload(userID uint64, fileID uint64) (*models.File, error) // 获取文件信息用于下载
-	// CreateFolder(userID uint64, folderName string, parentFolderID uint64) (*models.File, error)
 	// CheckFileExistenceByHash(hash string) (*models.File, error) // 根据哈希值检查文件是否存在，用于秒传
 }
 
@@ -193,4 +193,55 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 	}
 
 	return fileRecord, nil
+}
+
+func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error) {
+	// 1. 检查父文件夹是否存在和权限 (与 AddFile 类似)
+	if parentFolderID != nil {
+		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, errors.New("parent folder not found")
+			}
+			return nil, fmt.Errorf("failed to check parent folder: %w", err)
+		}
+		if parentFolder.UserID != userID || parentFolder.IsFolder != 1 {
+			return nil, errors.New("invalid parent folder or not a folder")
+		}
+	}
+
+	// 2. 检查同一父文件夹下是否已存在同名文件夹
+	// 这是一个简单的检查，更严谨的实现可能需要查询所有子文件和文件夹的名字
+	existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to check existing folders: %w", err)
+	}
+	for _, file := range existingFiles {
+		if file.IsFolder == 1 && file.FileName == folderName {
+			return nil, errors.New("folder with this name already exists in the current directory")
+		}
+	}
+
+	// 3. 创建文件夹记录
+	folder := &models.File{
+		UUID:           uuid.New().String(), // 文件夹也需要一个 UUID
+		UserID:         userID,
+		ParentFolderID: parentFolderID,
+		FileName:       folderName,
+		IsFolder:       1,   // 1 表示文件夹
+		Size:           0,   // 文件夹大小为 0
+		MimeType:       nil, // 文件夹没有 MimeType
+		OssBucket:      nil, // 文件夹没有 OssBucket
+		OssKey:         nil, // 文件夹没有 OssKey
+		MD5Hash:        nil, // 文件夹没有 MD5Hash
+		Status:         1,   // 正常状态
+		CreatedAt:      time.Now(),
+		UpdatedAt:      time.Now(),
+	}
+
+	if err := s.fileRepo.Create(folder); err != nil {
+		return nil, fmt.Errorf("failed to create folder record: %w", err)
+	}
+
+	return folder, nil
 }
