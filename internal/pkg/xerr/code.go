@@ -14,4 +14,6 @@ const (
 	CodeForbidden           = 2003 // 无权限
 
 	CodeResourceAlreadyExists = 3001 //文件夹已存在
+	CodeNotFound              = 3002 //文件不存在
+	CodeFileNotAvailable      = 3003 //文件无法获取
 )

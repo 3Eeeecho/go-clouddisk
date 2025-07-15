@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,8 +22,8 @@ type FileService interface {
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 	AddFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
-	// DeleteFile(userID uint64, fileID uint64) error
-	// GetFileForDownload(userID uint64, fileID uint64) (*models.File, error) // 获取文件信息用于下载
+	GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) // 获取文件信息用于下载
+	SoftDeleteFile(userID uint64, fileID uint64) error
 	// CheckFileExistenceByHash(hash string) (*models.File, error) // 根据哈希值检查文件是否存在，用于秒传
 }
 
@@ -84,11 +85,12 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 
 	// 2. 计算文件内容的哈希值，用于去重
 	md5Hasher := md5.New()
-	_, err := io.Copy(md5Hasher, fileContent)
+	md5CopyBytes, err := io.Copy(md5Hasher, fileContent)
 	if err != nil {
 		return nil, fmt.Errorf("failed to compute file MD5 hash: %w", err)
 	}
 	fileMD5Hash := hex.EncodeToString(md5Hasher.Sum(nil))
+	log.Printf("File %s (original size %d) MD5 calculated. Bytes read for MD5: %d", originalName, filesize, md5CopyBytes) // 添加日志
 
 	// 重要：将 fileContent 的读取位置重置到文件开头，以便再次读取用于写入物理存储
 	// 确保 fileContent 实现了 io.Seeker 接口（在 Handler 中我们使用了临时文件，它实现了）
@@ -114,7 +116,7 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 			ParentFolderID: parentFolderID,
 			FileName:       originalName, // 用户原始文件名
 			IsFolder:       0,            // 0表示文件
-			Size:           filesize,
+			Size:           existingFileByMD5.Size,
 			MimeType:       &mimeType,
 			OssBucket:      existingFileByMD5.OssBucket, // 引用现有物理文件的 bucket
 			OssKey:         existingFileByMD5.OssKey,    // 引用现有物理文件的 key
@@ -124,12 +126,14 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 			UpdatedAt:      time.Now(),
 		}
 		if err := s.fileRepo.Create(newFileRecord); err != nil {
+			log.Printf("Error creating new file record for existing file %s: %v", originalName, err) // 添加日志
 			return nil, fmt.Errorf("failed to create new file record for existing file: %w", err)
 		}
-
-		return newFileRecord, nil //秒传成功
+		log.Printf("Fast upload successful for file %s. New record ID: %d", originalName, newFileRecord.ID) // 添加日志
+		return newFileRecord, nil                                                                           //秒传成功
 	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		// 查找文件 MD5 时发生其他数据库错误
+		log.Printf("Error checking existing file by MD5 hash %s: %v", fileMD5Hash, err) // 添加日志
 		return nil, fmt.Errorf("failed to check existing file by MD5 hash: %w", err)
 	}
 
@@ -150,6 +154,7 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 
 	// 构造本地存储路径,使用 OssKey 作为本地文件名
 	localPath := filepath.Join(s.cfg.Storage.LocalBasePath, storageFileName)
+	log.Printf("Attempting to save physical file to: %s", localPath) // 添加日志
 
 	// 确保存储目录存在
 	err = os.MkdirAll(filepath.Dir(localPath), 0755)
@@ -164,7 +169,8 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 	defer out.Close()
 
 	// 从 fileContent 读取并写入到物理文件
-	_, err = io.Copy(out, fileContent)
+	writtenBytes, err := io.Copy(out, fileContent)
+	log.Printf("Physical file %s written successfully. Actual bytes written: %d", localPath, writtenBytes)
 	if err != nil {
 		os.Remove(localPath) // 写入失败，删除不完整文件
 		return nil, fmt.Errorf("failed to write file to disk: %w", err)
@@ -177,7 +183,7 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 		ParentFolderID: parentFolderID,
 		FileName:       originalName,
 		IsFolder:       0, // 0表示文件
-		Size:           filesize,
+		Size:           uint64(writtenBytes),
 		MimeType:       &mimeType,               // 传入指针
 		OssBucket:      &s.cfg.MinIO.BucketName, // 假设使用 MinIO 的 bucket name，即使是本地存储
 		OssKey:         &ossKey,                 // 传入指针
@@ -244,4 +250,75 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 	}
 
 	return folder, nil
+}
+
+func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) {
+	file, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("File ID %d not found in DB.", fileID) // 添加日志
+			return nil, nil, errors.New("file not found")
+		}
+		log.Printf("Error retrieving file ID %d from DB: %v", fileID, err) // 添加日志
+		return nil, nil, fmt.Errorf("failed to retrieve file from DB: %w", err)
+	}
+
+	// 权限检查：确保文件属于当前用户
+	if file.UserID != userID {
+		log.Printf("Access denied for file ID %d. User %d tried to access file of user %d.", file.ID, userID, file.UserID) // 添加日志
+		return nil, nil, errors.New("access denied: file does not belong to user")
+	}
+
+	// 检查是否是文件 (不是文件夹)
+	if file.IsFolder == 1 {
+		log.Printf("Access denied for file ID %d. User %d tried to access file of user %d.", file.ID, userID, file.UserID) // 添加日志
+		return nil, nil, errors.New("cannot download a folder")
+	}
+
+	// 检查文件状态是否正常 (例如，不在回收站)
+	if file.Status != 1 {
+		log.Printf("Attempted to download folder ID %d (Name: %s).", file.ID, file.FileName) // 添加日志
+		return nil, nil, errors.New("file is not available for download")
+	}
+
+	// 从本地存储路径打开文件
+	// 注意：这里我们假设 OssKey 已经包含了完整的文件名（MD5Hash + 扩展名）
+	// 并且 s.cfg.Storage.LocalBasePath 已经设置正确
+	localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *file.OssKey)
+	log.Printf("Opening physical file for download from: %s", localFilePath) // 添加日志
+	fileReader, err := os.Open(localFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Printf("Physical file %s not found on disk for DB record ID %d. Error: %v", localFilePath, file.ID, err) // 添加日志
+			return nil, nil, errors.New("physical file not found on disk")
+		}
+		log.Printf("Error opening physical file %s for download: %v", localFilePath, err) // 添加日志
+		return nil, nil, fmt.Errorf("failed to open physical file for download: %w", err)
+	}
+	log.Printf("Physical file %s opened successfully. Returning file and reader.", localFilePath) // 添加日志
+
+	return file, fileReader, nil
+}
+
+// SoftDeleteFile 软删除文件或文件夹
+func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
+	file, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errors.New("file or folder not found")
+		}
+		return fmt.Errorf("failed to retrieve file from DB: %w", err)
+	}
+
+	if file.UserID != userID {
+		return errors.New("access denied: file or folder does not belong to user")
+	}
+
+	//执行软删除
+	err = s.fileRepo.Delete(fileID)
+	if err != nil {
+		return fmt.Errorf("failed to soft delete file or folder: %w", err)
+	}
+
+	return nil
 }

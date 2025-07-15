@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
@@ -26,15 +28,8 @@ func ListUserFiles(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
 	fileService := services.NewFileService(fileRepo, userRepo, cfg)
 	return func(c *gin.Context) {
-		userID, exists := c.Get("userID")
-		if !exists {
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "User ID not found in context")
-			return
-		}
-
-		currentUserID, ok := userID.(uint64)
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
 		if !ok {
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Invalid user ID type in context")
 			return
 		}
 
@@ -70,15 +65,9 @@ func UploadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
 	fileService := services.NewFileService(fileRepo, userRepo, cfg)
 	return func(c *gin.Context) {
-		// 从 AuthMiddleware 中获取用户ID
-		userID, exists := c.Get("userID")
-		if !exists {
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "User ID not found in context")
-			return
-		}
-		currentUserID, ok := userID.(uint64)
+		// 获取用户ID
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
 		if !ok {
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Invalid user ID type in context")
 			return
 		}
 
@@ -163,14 +152,8 @@ func CreateFolder(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	fileService := services.NewFileService(fileRepo, userRepo, cfg)
 
 	return func(c *gin.Context) {
-		userID, exists := c.Get("userID")
-		if !exists {
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "User ID not found in context")
-			return
-		}
-		currentUserID, ok := userID.(uint64)
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
 		if !ok {
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Invalid user ID type in context")
 			return
 		}
 
@@ -207,20 +190,108 @@ func CreateFolder(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 
 // DownloadFile 处理文件下载请求 (占位符)
 func DownloadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	// fileRepo := repositories.NewFileRepository(db)
-	// userRepo := repositories.NewUserRepository(db)
-	// fileService := services.NewFileService(fileRepo, userRepo)
+	fileRepo := repositories.NewFileRepository(db)
+	userRepo := repositories.NewUserRepository(db)
+	fileService := services.NewFileService(fileRepo, userRepo, cfg)
 	return func(c *gin.Context) {
-		xerr.Success(c, http.StatusOK, "File download endpoint - To be implemented", nil)
+		fileIDStr := c.Param("file_id")
+		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+		if err != nil {
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
+			return
+		}
+
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return
+		}
+
+		fileModel, fileReader, err := fileService.GetFileForDownload(currentUserID, fileID)
+		if err != nil {
+			if err.Error() == "file not found" || err.Error() == "physical file not found on disk" {
+				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, err.Error())
+				return
+			}
+			if err.Error() == "access denied: file does not belong to user" {
+				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, err.Error())
+				return
+			}
+			if err.Error() == "cannot download a folder" {
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+				return
+			}
+			if err.Error() == "file is not available for download" {
+				xerr.Error(c, http.StatusGone, xerr.CodeFileNotAvailable, err.Error()) // 例如，文件已在回收站
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to prepare file for download: %v", err))
+			return
+		}
+		defer fileReader.Close() // 确保文件读取器关闭
+
+		// 尝试将 fileReader 转换为 *os.File，以便利用其 Stat() 方法和 ReadSeekCloser 接口
+		// http.ServeContent 最好接收一个 io.ReadSeeker 接口
+		var seekableReader io.ReadSeeker
+		var lastModified time.Time
+		if osFile, ok := fileReader.(*os.File); ok {
+			fileInfo, statErr := osFile.Stat()
+			if statErr == nil {
+				seekableReader = osFile
+				lastModified = fileInfo.ModTime()
+			} else {
+				// 如果 Stat 失败，仍然可以使用普通的 io.Reader，但 ServeContent 功能会受限
+				// 对于这种情况，http.ServeContent 内部会进行 io.Copy
+				seekableReader = fileReader.(io.ReadSeeker) // 这里强制转换，因为它必须是 ReadSeeker
+				lastModified = fileModel.UpdatedAt          // 使用数据库中的更新时间作为 Last-Modified
+			}
+		} else {
+			// 如果不是 *os.File，则假设它已经是 io.ReadSeeker 并且没有更具体的 FileInfo
+			seekableReader = fileReader.(io.ReadSeeker)
+			lastModified = fileModel.UpdatedAt
+		}
+
+		// 设置文件名
+		fileName := fileModel.FileName
+
+		// 使用 http.ServeContent 进行下载
+		// ServeContent 会自动处理 Content-Length, Content-Type, Content-Disposition, Range 请求等
+		http.ServeContent(c.Writer, c.Request, fileName, lastModified, seekableReader)
+
+		// 注意：io.Copy(c.Writer, fileReader) 这行代码不再需要，
+		// 因为 http.ServeContent 已经处理了文件内容的写入。
 	}
 }
 
 // DeleteFile 处理文件删除请求 (占位符)
 func DeleteFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	// fileRepo := repositories.NewFileRepository(db)
-	// userRepo := repositories.NewUserRepository(db)
-	// fileService := services.NewFileService(fileRepo, userRepo)
+	fileRepo := repositories.NewFileRepository(db)
+	userRepo := repositories.NewUserRepository(db)
+	fileService := services.NewFileService(fileRepo, userRepo, cfg)
 	return func(c *gin.Context) {
-		xerr.Success(c, http.StatusOK, "File delete endpoint - To be implemented", nil)
+		fileIDStr := c.Param("file_id")
+		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+		if err != nil {
+			xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
+		}
+
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return
+		}
+
+		err = fileService.SoftDeleteFile(currentUserID, fileID)
+		if err != nil {
+			if err.Error() == "file or folder not found" {
+				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, err.Error())
+				return
+			}
+			if err.Error() == "access denied: file or folder does not belong to user" {
+				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, err.Error())
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to delete file: %v", err))
+			return
+		}
+		xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d soft-deleted successfully", fileID), nil)
 	}
 }
