@@ -16,4 +16,5 @@ const (
 	CodeResourceAlreadyExists = 3001 //文件夹已存在
 	CodeNotFound              = 3002 //文件不存在
 	CodeFileNotAvailable      = 3003 //文件无法获取
+	CodeConflict              = 3004 //文件冲突
 )

@@ -15,16 +15,17 @@ type FileRepository interface {
 	FindByUserID(userID uint64) ([]models.File, error)                                          // 获取用户所有文件
 	FindByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error) // 获取指定文件夹下的文件
 	FindByPath(path string) (*models.File, error)
-	FindByUUID(uuid string) (*models.File, error)           // 根据 UUID 查找
-	FindByOssKey(ossKey string) (*models.File, error)       //根据 OssKey 查找
-	FindFileByMD5Hash(md5Hash string) (*models.File, error) // 根据存储路径查找文件
+	FindByUUID(uuid string) (*models.File, error)                  // 根据 UUID 查找
+	FindByOssKey(ossKey string) (*models.File, error)              //根据 OssKey 查找
+	FindFileByMD5Hash(md5Hash string) (*models.File, error)        // 根据存储路径查找文件
+	FindDeletedFilesByUserID(userID uint64) ([]models.File, error) //查找回收站中的文件
+	// 查找指定父文件夹下所有文件，包括软删除的 (用于恢复逻辑中的路径检查)
+	FindAllFilesByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 
 	Update(file *models.File) error
 	SoftDelete(id uint64) error      // 软删除文件
 	PermanentDelete(id uint64) error // 永久删除文件
-	// 可能还需要其他方法，例如：
-	// FindFileByHash(hash string) (*models.File, error)
-	// FindFileByOriginalName(userID uint64, originalName string) (*models.File, error)
+
 }
 
 type fileRepository struct {
@@ -132,6 +133,7 @@ func (r *fileRepository) FindByPath(path string) (*models.File, error) {
 	}
 	return &file, nil
 }
+
 func (r *fileRepository) Update(file *models.File) error {
 	if err := r.db.Save(file).Error; err != nil {
 		log.Printf("Error updating file %d: %v", file.ID, err)
@@ -157,4 +159,26 @@ func (r *fileRepository) PermanentDelete(id uint64) error {
 		return err
 	}
 	return nil
+}
+
+func (r *fileRepository) FindDeletedFilesByUserID(userID uint64) ([]models.File, error) {
+	var files []models.File
+	if err := r.db.Unscoped().Where("user_id = ?", userID).Where("deleted_at IS NOT NULL").Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+func (r *fileRepository) FindAllFilesByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error) {
+	var files []models.File
+	query := r.db.Unscoped().Where("user_id = ?", userID)
+	if parentFolderID == nil {
+		query = query.Where("parent_folder_id IS NULL")
+	} else {
+		query = query.Where("parent_folder_id = ?", *parentFolderID)
+	}
+	if err := query.Find(&files).Error; err != nil {
+		return nil, err
+	}
+	return files, nil
 }

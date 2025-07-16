@@ -79,7 +79,8 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 			fileGroup.GET("/download/:file_id", handlers.DownloadFile(fileService, cfg))
 			fileGroup.DELETE("/softdelete/:file_id", handlers.SoftDeleteFile(fileService, cfg))
 			fileGroup.DELETE("/permanentdelete/:file_id", handlers.PermanentDeleteFile(fileService, cfg))
-
+			fileGroup.GET("/recyclebin", handlers.ListRecycleBinFiles(fileService))
+			fileGroup.PUT("/restore/:file_id", handlers.RestoreFile(fileService))
 		}
 	}
 

@@ -25,6 +25,8 @@ type FileService interface {
 	GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) // 获取文件信息用于下载
 	SoftDeleteFile(userID uint64, fileID uint64) error
 	PermanentDeleteFile(userID uint64, fileID uint64) error
+	ListRecycleBinFiles(userID uint64) ([]models.File, error)
+	RestoreFile(userID uint64, fileID uint64) error // 从回收站恢复文件
 	// CheckFileExistenceByHash(hash string) (*models.File, error) // 根据哈希值检查文件是否存在，用于秒传
 }
 
@@ -356,8 +358,11 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 		// 执行 GORM 的软删除操作，这将同时更新 status 字段为 0 和 deleted_at 字段为当前时间
 		// GORM 的 Delete 方法在模型有 DeletedAt 字段时会自动进行软删除。
 		// 手动设置 fileToUpdate.Status = 0，并让 GORM 的 Delete 自动处理 DeletedAt。
-		fileToUpdate.Status = 0              // 标记为软删除状态
-		err = tx.Delete(&fileToUpdate).Error // 使用事务的 DB 实例进行删除
+		err = tx.Unscoped().Model(&models.File{}).Where("id = ?", fileToUpdate.ID).Updates(map[string]interface{}{
+			"status":     0,
+			"deleted_at": time.Now(),
+		}).Error
+
 		if err != nil {
 			tx.Rollback()
 			log.Printf("SoftDeleteFile: Failed to soft-delete file ID %d in DB transaction: %v", fileToUpdate.ID, err)
@@ -466,6 +471,135 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 	}
 
 	log.Printf("PermanentDeleteFile: File ID %d permanently deleted successfully.", fileID)
+	return nil
+}
+
+func (s *fileService) ListRecycleBinFiles(userID uint64) ([]models.File, error) {
+	files, err := s.fileRepo.FindDeletedFilesByUserID(userID)
+	if err != nil {
+		log.Printf("ListRecycleBinFiles: Failed to retrieve deleted files for user %d: %v", userID, err)
+		return nil, fmt.Errorf("failed to retrieve recycle bin files: %w", err)
+	}
+	return files, nil
+}
+
+func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
+	// 1. 获取要恢复的文件/文件夹记录
+	rootFile, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("RestoreFile: File ID %d not found for user %d.", fileID, userID)
+			return errors.New("file or folder not found")
+		}
+		log.Printf("RestoreFile: Error retrieving file ID %d for user %d: %v", fileID, userID, err)
+		return fmt.Errorf("failed to retrieve file: %w", err)
+	}
+
+	// 2. 权限检查
+	if rootFile.UserID != userID {
+		log.Printf("RestoreFile: Access denied for file ID %d. User %d tried to restore file of user %d.", fileID, userID, rootFile.UserID)
+		return errors.New("access denied: file or folder does not belong to user")
+	}
+
+	// 3. 检查文件是否在回收站中
+	// 只有 deleted_at 不为空，且 status 为 0，才认为是回收站中的文件
+	if !rootFile.DeletedAt.Valid || rootFile.Status != 0 {
+		return errors.New("file or folder is not in the recycle bin")
+	}
+
+	// 4. 检查恢复到原始位置是否会引起命名冲突
+	// 查找原始父文件夹下所有 '正常' 状态的文件，检查是否有同名文件。
+	// 这里使用 FindByUserIDAndParentFolderID，它应该只返回 status=1 的文件。
+	originalParentFolderID := rootFile.ParentFolderID
+	originalFileName := rootFile.FileName
+	proposedFileName := rootFile.FileName
+	for counter := 1; ; counter++ {
+		existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, originalParentFolderID)
+		if err != nil {
+			log.Printf("RestoreFile: Failed to check existing files in original parent folder %v for user %d: %v", originalParentFolderID, userID, err)
+			return fmt.Errorf("failed to check original folder contents: %w", err)
+		}
+
+		isConflit := false
+		for _, existingFile := range existingFiles {
+			// 检查同名文件/文件夹，但要排除掉当前要恢复的文件本身（如果它还没被完全删除）
+			// GORM 的软删除机制意味着 rootFile 实际上还在数据库中，只是被标记了。
+			// FindByUserIDAndParentFolderID 不会返回已软删除的，所以这里只检查活跃的文件。
+			if existingFile.FileName == proposedFileName && existingFile.IsFolder == rootFile.IsFolder {
+				//冲突产生
+				isConflit = true
+				break
+			}
+		}
+
+		// 没有冲突，找到可用名称
+		if !isConflit {
+			break
+		}
+
+		//存在名字冲突,生成新文件名
+		// 分离文件名和扩展名 (如果存在)
+		ext := filepath.Ext(originalFileName)
+		nameWithoutExt := originalFileName[:len(originalFileName)-len(ext)]
+		proposedFileName = fmt.Sprintf("%s(%d)%s", nameWithoutExt, counter, ext)
+	}
+
+	// 5.开启事务
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		log.Printf("RestoreFile: Failed to begin transaction: %v", tx.Error)
+		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	// 6. 收集所有需要恢复的文件和文件夹 (包括子项)
+	// collectFilesForDeletion 能够获取根文件及其所有（包括软删除的）子项
+	// 注意：这里收集到的 rootFile 还是原始文件名，需要在循环里更新
+	filesToRestore, err := s.collectFilesForDeletion(fileID, userID)
+	if err != nil {
+		tx.Rollback()
+		log.Printf("RestoreFile: Failed to collect files for restoration for file ID %d: %v", fileID, err)
+		return fmt.Errorf("failed to collect files for restoration: %w", err)
+	}
+
+	//批量恢复数据库记录
+	for _, fileToUpdate := range filesToRestore {
+		// 权限再次检查 (尽管 collectFilesForDeletion 已经过滤了)
+		if fileToUpdate.UserID != userID {
+			tx.Rollback()
+			return errors.New("internal error: file ownership mismatch during batch restoration")
+		}
+
+		if fileToUpdate.ID == fileID {
+			fileToUpdate.FileName = proposedFileName
+		}
+
+		// 恢复操作：将 status 改为 1，清空 deleted_at
+		fileToUpdate.Status = 1
+		fileToUpdate.DeletedAt = gorm.DeletedAt{}
+
+		err = tx.Save(&fileToUpdate).Error
+		if err != nil {
+			tx.Rollback()
+			log.Printf("RestoreFile: Failed to restore file record ID %d in DB transaction: %v", fileToUpdate.ID, err)
+			return fmt.Errorf("failed to restore file in transaction: %w", err)
+		}
+		log.Printf("RestoreFile: File ID %d restored in DB transaction.", fileToUpdate.ID)
+	}
+
+	// 8. 提交事务
+	err = tx.Commit().Error
+	if err != nil {
+		log.Printf("RestoreFile: Failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("RestoreFile: File/Folder ID %d restored successfully to its original location (final name: '%s').", fileID, proposedFileName)
 	return nil
 }
 

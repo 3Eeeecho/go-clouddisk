@@ -355,3 +355,67 @@ func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) g
 		xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d permanently deleted successfully", fileID), nil)
 	}
 }
+
+// @Summary 列出回收站中的文件
+// @Description 列出用户回收站中的所有文件
+// @Tags 文件
+// @Param
+// @Success 200 {object} map[string]interface{} "获取成功"
+// @Failure 500 {object} map[string]interface{} "内部错误"
+// @Router /api/v1/files/recyclebin [get]
+func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return
+		}
+
+		files, err := fileService.ListRecycleBinFiles(currentUserID)
+		if err != nil {
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to list recycle bin files: %v", err))
+			return
+		}
+
+		xerr.Success(c, http.StatusOK, "Recycle bin files listed successfully", files)
+	}
+}
+
+func RestoreFile(fileService services.FileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return
+		}
+
+		fileIDStr := c.Param("file_id")
+		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+		if err != nil {
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
+			return
+		}
+
+		// 不再需要解析请求体
+
+		err = fileService.RestoreFile(currentUserID, fileID)
+		if err != nil {
+			if err.Error() == "file or folder not found" || err.Error() == "file or folder is not in the recycle bin" {
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+				return
+			}
+			if err.Error() == "access denied: file or folder does not belong to user" {
+				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, err.Error())
+				return
+			}
+			// 命名冲突的错误
+			if err.Error() == "a file with the same name already exists in the original location" ||
+				err.Error() == "a folder with the same name already exists in the original location" {
+				xerr.Error(c, http.StatusConflict, xerr.CodeConflict, err.Error())
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to restore file: %v", err))
+			return
+		}
+
+		xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d restored successfully to its original location", fileID), nil)
+	}
+}
