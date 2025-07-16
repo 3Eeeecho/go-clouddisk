@@ -1,0 +1,290 @@
+definitions:
+  handlers.CreateFolderRequest:
+    properties:
+      folder_name:
+        type: string
+      parent_folder_id:
+        description: 可选，根目录为 null
+        type: integer
+    required:
+    - folder_name
+    type: object
+  handlers.LoginRequest:
+    properties:
+      identifier:
+        description: 可以是用户名或邮箱
+        type: string
+      password:
+        type: string
+    required:
+    - identifier
+    - password
+    type: object
+  handlers.RegisterRequest:
+    properties:
+      email:
+        type: string
+      password:
+        maxLength: 255
+        minLength: 6
+        type: string
+      username:
+        maxLength: 64
+        minLength: 3
+        type: string
+    required:
+    - email
+    - password
+    - username
+    type: object
+info:
+  contact: {}
+paths:
+  /api/v1/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: 用户登录接口
+      parameters:
+      - description: 登录信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 登录成功，返回token
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+        "401":
+          description: 用户名或密码错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 用户登录
+      tags:
+      - 用户认证
+  /api/v1/auth/refresh:
+    post:
+      description: 刷新JWT Token
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 刷新成功
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 刷新Token
+      tags:
+      - 用户认证
+  /api/v1/auth/register:
+    post:
+      consumes:
+      - application/json
+      description: 用户注册接口
+      parameters:
+      - description: 注册信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 注册成功
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+        "409":
+          description: 用户名或邮箱已存在
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 用户注册
+      tags:
+      - 用户认证
+  /api/v1/files/:
+    get:
+      description: 获取当前用户指定文件夹下的文件和文件夹列表
+      parameters:
+      - description: 父文件夹ID
+        in: query
+        name: parent_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 文件列表
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取用户文件列表
+      tags:
+      - 文件
+  /api/v1/files/download/{file_id}:
+    get:
+      description: 下载指定ID的文件
+      parameters:
+      - description: 文件ID
+        in: path
+        name: file_id
+        required: true
+        type: integer
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: 文件内容
+          schema:
+            type: file
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 下载文件
+      tags:
+      - 文件
+  /api/v1/files/folder:
+    post:
+      consumes:
+      - application/json
+      description: 在指定目录下创建文件夹
+      parameters:
+      - description: 文件夹信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateFolderRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: 创建成功
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 创建文件夹
+      tags:
+      - 文件
+  /api/v1/files/permanentdelete/{file_id}:
+    delete:
+      description: 将文件或文件夹彻底删除
+      parameters:
+      - description: 文件ID
+        in: path
+        name: file_id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: 删除成功
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 彻底删除文件或文件夹（永久删除）
+      tags:
+      - 文件
+  /api/v1/files/softdelete/{file_id}:
+    delete:
+      description: 将文件或文件夹移动到回收站
+      parameters:
+      - description: 文件ID
+        in: path
+        name: file_id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: 删除成功
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 删除文件或文件夹（软删除）
+      tags:
+      - 文件
+  /api/v1/files/upload:
+    post:
+      consumes:
+      - multipart/form-data
+      description: 上传文件到指定文件夹
+      parameters:
+      - description: 文件内容
+        in: formData
+        name: file
+        required: true
+        type: file
+      - description: 父文件夹ID
+        in: formData
+        name: parent_folder_id
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: 上传成功
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: 参数错误
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 上传文件
+      tags:
+      - 文件
+  /api/v1/users/info:
+    get:
+      description: 获取当前登录用户信息
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 用户信息
+          schema:
+            additionalProperties: true
+            type: object
+      summary: 获取用户信息
+      tags:
+      - 用户
+swagger: "2.0"

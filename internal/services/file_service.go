@@ -24,6 +24,7 @@ type FileService interface {
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
 	GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) // 获取文件信息用于下载
 	SoftDeleteFile(userID uint64, fileID uint64) error
+	PermanentDeleteFile(userID uint64, fileID uint64) error
 	// CheckFileExistenceByHash(hash string) (*models.File, error) // 根据哈希值检查文件是否存在，用于秒传
 }
 
@@ -31,16 +32,18 @@ type fileService struct {
 	fileRepo repositories.FileRepository
 	userRepo repositories.UserRepository
 	cfg      *config.Config
+	db       *gorm.DB
 }
 
 var _ FileService = (*fileService)(nil)
 
 // NewFileService 创建一个新的文件服务实例
-func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config) FileService {
+func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB) FileService {
 	return &fileService{
 		fileRepo: fileRepo,
 		userRepo: userRepo,
 		cfg:      cfg,
+		db:       db,
 	}
 }
 
@@ -305,20 +308,216 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("SoftDeleteFile: File ID %d not found for user %d.", fileID, userID)
 			return errors.New("file or folder not found")
 		}
-		return fmt.Errorf("failed to retrieve file from DB: %w", err)
+		log.Printf("SoftDeleteFile: Error retrieving file ID %d for user %d: %v", fileID, userID, err)
+		return fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
 	if file.UserID != userID {
+		log.Printf("SoftDeleteFile: Access denied for file ID %d. User %d tried to soft-delete file of user %d.", fileID, userID, file.UserID)
 		return errors.New("access denied: file or folder does not belong to user")
 	}
 
-	//执行软删除
-	err = s.fileRepo.Delete(fileID)
-	if err != nil {
-		return fmt.Errorf("failed to soft delete file or folder: %w", err)
+	// 检查是否已经是软删除状态
+	if file.Status == 0 {
+		return errors.New("file or folder is already soft-deleted")
 	}
 
+	// 获取所有需要删除的文件或文件夹及其所有子项
+	filesToDelete, err := s.collectFilesForDeletion(fileID, userID)
+	if err != nil {
+		log.Printf("SoftDeleteFile: Failed to collect files for soft deletion for file ID %d: %v", fileID, err)
+		return fmt.Errorf("failed to collect files for soft deletion: %w", err)
+	}
+
+	// 开启事务
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		log.Printf("SoftDeleteFile: Failed to begin transaction: %v", tx.Error)
+		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}() // 确保 panic 时回滚
+
+	// 在事务中批量更新所有待删除文件的状态和 deleted_at
+	for _, fileToUpdate := range filesToDelete {
+		// 确保文件属于当前用户 (已在前面检查，这里是双重保险)
+		if fileToUpdate.UserID != userID {
+			tx.Rollback()
+			log.Printf("SoftDeleteFile: Attempted to delete file ID %d (user %d) not belonging to current user %d during batch deletion.", fileToUpdate.ID, fileToUpdate.UserID, userID)
+			return errors.New("internal error: file ownership mismatch during batch deletion")
+		}
+
+		// 执行 GORM 的软删除操作，这将同时更新 status 字段为 0 和 deleted_at 字段为当前时间
+		// GORM 的 Delete 方法在模型有 DeletedAt 字段时会自动进行软删除。
+		// 手动设置 fileToUpdate.Status = 0，并让 GORM 的 Delete 自动处理 DeletedAt。
+		fileToUpdate.Status = 0              // 标记为软删除状态
+		err = tx.Delete(&fileToUpdate).Error // 使用事务的 DB 实例进行删除
+		if err != nil {
+			tx.Rollback()
+			log.Printf("SoftDeleteFile: Failed to soft-delete file ID %d in DB transaction: %v", fileToUpdate.ID, err)
+			return fmt.Errorf("failed to soft-delete file in transaction: %w", err)
+		}
+		log.Printf("SoftDeleteFile: File ID %d soft-deleted in DB transaction.", fileToUpdate.ID)
+	}
+
+	// 提交事务
+	err = tx.Commit().Error
+	if err != nil {
+		log.Printf("SoftDeleteFile: Failed to commit transaction: %v", err)
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("SoftDeleteFile: File/Folder ID %d and its contents soft-deleted successfully.", fileID)
 	return nil
+}
+
+func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
+	rootFile, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			log.Printf("PermanentDeleteFile: File ID %d not found for user %d.", fileID, userID)
+			return errors.New("file or folder not found")
+		}
+		log.Printf("PermanentDeleteFile: Error retrieving file ID %d for user %d: %v", fileID, userID, err)
+		return fmt.Errorf("failed to retrieve file: %w", err)
+	}
+
+	if rootFile.UserID != userID {
+		log.Printf("PermanentDeleteFile: Access denied for file ID %d. User %d tried to delete file of user %d.", fileID, userID, rootFile.UserID)
+		return errors.New("access denied: file or folder does not belong to user")
+	}
+
+	// 收集所有需要永久删除的文件和文件夹
+	filesToPermanentlyDelete, err := s.collectFilesForDeletion(fileID, userID)
+	if err != nil {
+		log.Printf("PermanentDeleteFile: Failed to collect files for permanent deletion for file ID %d: %v", fileID, err)
+		return fmt.Errorf("failed to collect files for permanent deletion: %w", err)
+	}
+
+	// 开启事务，确保数据库删除和物理文件删除的原子性
+	// 这是一个简化的事务处理，实际可能需要更复杂的事务管理器
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		log.Printf("PermanentDeleteFile: Failed to begin transaction: %v", tx.Error)
+		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	// 在事务中批量删除数据库记录和物理文件
+	// 为了确保物理文件删除在数据库记录删除之前进行（避免数据库记录没了但物理文件没删成功的情况）
+	// 我们先尝试删除所有物理文件，然后删除数据库记录。
+	// 注意：这里需要考虑物理文件删除失败的回滚。
+	// 为了简化，我们按顺序处理，任何一个失败就回滚。
+
+	// 对要删除的文件进行排序，确保先删除子项的物理文件，再删除父文件夹的物理文件
+	// 这样可以避免在删除子项物理文件时，父文件夹的路径已经不存在的情况
+	// 但实际上 os.Remove 只需要完整路径，顺序影响不大，更多是逻辑清晰。
+	// 关键是所有物理文件删除成功后再删除数据库记录，或者在循环内按序删除。
+
+	// 更稳健的做法是：先收集所有物理文件路径，在事务外（或独立于DB删除前）尝试删除，
+	// 如果所有物理文件都删除成功，再开始DB事务删除DB记录。
+	// 但为了原子性，我们保持在事务内，并处理回滚。
+	for i := len(filesToPermanentlyDelete) - 1; i >= 0; i-- {
+		fileToPermanentlyDelete := filesToPermanentlyDelete[i]
+
+		// 确保文件属于当前用户 (双重检查)
+		if fileToPermanentlyDelete.UserID != userID {
+			tx.Rollback()
+			log.Printf("PermanentDeleteFile: Attempted to delete file ID %d (user %d) not belonging to current user %d during batch permanent deletion.", fileToPermanentlyDelete.ID, fileToPermanentlyDelete.UserID, userID)
+			return errors.New("internal error: file ownership mismatch during batch permanent deletion")
+		}
+
+		//如果是文件且有 OssKey (即有对应的物理文件)，则删除物理文件
+		if fileToPermanentlyDelete.IsFolder == 0 && fileToPermanentlyDelete.OssKey != nil && *fileToPermanentlyDelete.OssKey != "" {
+			localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *fileToPermanentlyDelete.OssKey)
+			err = os.Remove(localFilePath)
+			if err != nil {
+				tx.Rollback()
+				log.Printf("PermanentDeleteFile: Failed to delete physical file %s for record ID %d: %v", localFilePath, fileID, err)
+				return fmt.Errorf("failed to delete physical file: %w", err)
+			}
+			log.Printf("PermanentDeleteFile: Physical file %s deleted.", localFilePath)
+		}
+
+		err = tx.Unscoped().Delete(&models.File{}, fileToPermanentlyDelete.ID).Error
+		if err != nil {
+			tx.Rollback()
+			log.Printf("PermanentDeleteFile: Failed to delete file record ID %d from DB via transaction: %v", fileToPermanentlyDelete.ID, err)
+			return fmt.Errorf("failed to delete file record: %w", err)
+		}
+		log.Printf("PermanentDeleteFile: File record ID %d deleted from DB via transaction.", fileToPermanentlyDelete.ID)
+	}
+
+	tx.Commit()
+	if tx.Error != nil {
+		log.Printf("PermanentDeleteFile: Failed to commit transaction: %v", tx.Error)
+		return fmt.Errorf("failed to commit transaction: %w", tx.Error)
+	}
+
+	log.Printf("PermanentDeleteFile: File ID %d permanently deleted successfully.", fileID)
+	return nil
+}
+
+// ---helpers---
+// collectFilesForDeletion 辅助函数：收集需要删除的文件和文件夹（包括其所有子项）
+// 这里使用 BFS (广度优先搜索) 遍历，避免深层递归导致的栈溢出
+// 返回一个切片，包含所有需要处理的 models.File 记录
+func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) ([]models.File, error) {
+	rootFile, err := s.fileRepo.FindByID(rootFileID)
+	if err != nil {
+		return nil, err // 错误会在调用方处理
+	}
+	filesToDelete := []models.File{*rootFile} // 包含根文件/文件夹自身
+
+	// 如果是文件夹，查找所有子项
+	if rootFile.IsFolder == 1 {
+		// 使用队列进行 BFS
+		queue := []uint64{rootFileID}
+		processedIDs := make(map[uint64]bool) // 避免重复处理
+		processedIDs[rootFileID] = true
+
+		for len(queue) > 0 {
+			currentFolderID := queue[0]
+			queue = queue[1:]
+
+			// 查找当前文件夹下的所有文件和子文件夹 (包括已软删除的，因为要一起永久删除)
+			var children []models.File
+			// 注意：这里需要确保能够查到所有状态的子项，包括 Status 为 0 的，因为它们也应该被软删除或更新 deleted_at
+			// FindByUserIDAndParentFolderID 默认只查 status=1，这里需要更灵活的查询
+			childQuery := s.db.Unscoped().Where("user_id = ?", userID)
+			if currentFolderID == 0 { // 根目录
+				childQuery = childQuery.Where("parent_folder_id IS NULL")
+			} else {
+				childQuery = childQuery.Where("parent_folder_id = ?", currentFolderID)
+			}
+
+			err = childQuery.Find(&children).Error
+			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+				log.Printf("SoftDeleteFile: Failed to retrieve children for folder ID %d: %v", currentFolderID, err)
+				return nil, fmt.Errorf("failed to retrieve folder children: %w", err)
+			}
+
+			for _, child := range children {
+				if !processedIDs[child.ID] {
+					filesToDelete = append(filesToDelete, child)
+					processedIDs[child.ID] = true
+					if child.IsFolder == 1 {
+						queue = append(queue, child.ID)
+					}
+				}
+			}
+		}
+	}
+	return filesToDelete, nil
 }

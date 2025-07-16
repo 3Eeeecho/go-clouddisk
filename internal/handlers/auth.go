@@ -23,8 +23,16 @@ type LoginRequest struct {
 	Password   string `json:"password" binding:"required"`
 }
 
-// Register 处理用户注册请求
-// 这是一个闭包，用于注入依赖 (DB 和 Config)
+// @Summary 用户注册
+// @Description 用户注册接口
+// @Tags 用户认证
+// @Accept json
+// @Produce json
+// @Param data body RegisterRequest true "注册信息"
+// @Success 200 {object} map[string]interface{} "注册成功"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Failure 409 {object} map[string]interface{} "用户名或邮箱已存在"
+// @Router /api/v1/auth/register [post]
 func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
 	authService := services.NewAuthService(userRepo, cfg)
@@ -60,7 +68,16 @@ func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// Login
+// @Summary 用户登录
+// @Description 用户登录接口
+// @Tags 用户认证
+// @Accept json
+// @Produce json
+// @Param data body LoginRequest true "登录信息"
+// @Success 200 {object} map[string]interface{} "登录成功，返回token"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Failure 401 {object} map[string]interface{} "用户名或密码错误"
+// @Router /api/v1/auth/login [post]
 func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
 	authService := services.NewAuthService(userRepo, cfg)
@@ -89,14 +106,24 @@ func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// RefreshToken 占位函数
+// @Summary 刷新Token
+// @Description 刷新JWT Token
+// @Tags 用户认证
+// @Produce json
+// @Success 200 {object} map[string]interface{} "刷新成功"
+// @Router /api/v1/auth/refresh [post]
 func RefreshToken(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		xerr.Success(c, http.StatusOK, "Refresh token endpoint - To be implemented", nil)
 	}
 }
 
-// GetUserInfo 占位函数
+// @Summary 获取用户信息
+// @Description 获取当前登录用户信息
+// @Tags 用户
+// @Produce json
+// @Success 200 {object} map[string]interface{} "用户信息"
+// @Router /api/v1/users/info [get]
 func GetUserInfo() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		xerr.Success(c, http.StatusOK, "Get user info endpoint - To be implemented", nil)

@@ -1,4 +1,3 @@
-目录结构设计如下:
 your-simple-cloud-disk/
 ├── cmd/
 │   └── server/

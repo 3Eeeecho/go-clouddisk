@@ -1,7 +1,6 @@
 package repositories
 
 import (
-	"errors"
 	"log"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
@@ -21,7 +20,7 @@ type FileRepository interface {
 	FindFileByMD5Hash(md5Hash string) (*models.File, error) // 根据存储路径查找文件
 
 	Update(file *models.File) error
-	Delete(id uint64) error          // 软删除文件
+	SoftDelete(id uint64) error      // 软删除文件
 	PermanentDelete(id uint64) error // 永久删除文件
 	// 可能还需要其他方法，例如：
 	// FindFileByHash(hash string) (*models.File, error)
@@ -48,11 +47,8 @@ func (r *fileRepository) Create(file *models.File) error {
 }
 func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	var file models.File
-	err := r.db.First(&file, id).Error
+	err := r.db.Unscoped().First(&file, id).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, gorm.ErrRecordNotFound
-		}
 		log.Printf("Error finding file by ID %d: %v", id, err)
 		return nil, err
 	}
@@ -97,9 +93,6 @@ func (r *fileRepository) FindByUUID(uuid string) (*models.File, error) {
 	var file models.File
 	err := r.db.Where("uuid = ?", uuid).First(&file).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, gorm.ErrRecordNotFound
-		}
 		log.Printf("Error finding file by UUID %s: %v", uuid, err)
 		return nil, err
 	}
@@ -111,9 +104,6 @@ func (r *fileRepository) FindByOssKey(ossKey string) (*models.File, error) {
 	var file models.File
 	err := r.db.Where("oss_key = ?", ossKey).First(&file).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, gorm.ErrRecordNotFound
-		}
 		log.Printf("Error finding file by OssKey %s: %v", ossKey, err)
 		return nil, err
 	}
@@ -126,9 +116,6 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 	// 注意：这里我们可能需要查询的是那些非文件夹且状态正常的文件的 MD5Hash
 	err := r.db.Where("md5_hash = ? AND is_folder = 0 AND status = 1", md5Hash).First(&file).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, gorm.ErrRecordNotFound
-		}
 		log.Printf("Error finding file by MD5 hash %s: %v", md5Hash, err)
 		return nil, err
 	}
@@ -140,9 +127,6 @@ func (r *fileRepository) FindByPath(path string) (*models.File, error) {
 	var file models.File
 	err := r.db.Where("storage_path = ?", path).First(&file).Error
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, gorm.ErrRecordNotFound
-		}
 		log.Printf("Error finding file by path %s: %v", path, err)
 		return nil, err
 	}
@@ -157,7 +141,7 @@ func (r *fileRepository) Update(file *models.File) error {
 }
 
 // 软删除文件
-func (r *fileRepository) Delete(id uint64) error {
+func (r *fileRepository) SoftDelete(id uint64) error {
 	// GORM 的 Delete 方法在模型中包含 gorm.DeletedAt 时，默认执行软删除
 	if err := r.db.Delete(&models.File{}, id).Error; err != nil {
 		log.Printf("Error soft-deleting file %d: %v", id, err)

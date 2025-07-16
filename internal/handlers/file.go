@@ -11,10 +11,8 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
-	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 type CreateFolderRequest struct {
@@ -22,11 +20,15 @@ type CreateFolderRequest struct {
 	ParentFolderID *uint64 `json:"parent_folder_id"` // 可选，根目录为 null
 }
 
-// ListUserFiles 获取用户文件列表
-func ListUserFiles(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	fileRepo := repositories.NewFileRepository(db)
-	userRepo := repositories.NewUserRepository(db)
-	fileService := services.NewFileService(fileRepo, userRepo, cfg)
+// @Summary 获取用户文件列表
+// @Description 获取当前用户指定文件夹下的文件和文件夹列表
+// @Tags 文件
+// @Produce json
+// @Param parent_id query int false "父文件夹ID"
+// @Success 200 {object} map[string]interface{} "文件列表"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Router /api/v1/files/ [get]
+func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := ginutils.GetUserIDFromContext(c)
 		if !ok {
@@ -59,11 +61,17 @@ func ListUserFiles(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// UploadFile 处理文件上传请求 (占位符)
-func UploadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	fileRepo := repositories.NewFileRepository(db)
-	userRepo := repositories.NewUserRepository(db)
-	fileService := services.NewFileService(fileRepo, userRepo, cfg)
+// @Summary 上传文件
+// @Description 上传文件到指定文件夹
+// @Tags 文件
+// @Accept multipart/form-data
+// @Produce json
+// @Param file formData file true "文件内容"
+// @Param parent_folder_id formData int false "父文件夹ID"
+// @Success 201 {object} map[string]interface{} "上传成功"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Router /api/v1/files/upload [post]
+func UploadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 获取用户ID
 		currentUserID, ok := ginutils.GetUserIDFromContext(c)
@@ -146,11 +154,16 @@ func UploadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-func CreateFolder(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	fileRepo := repositories.NewFileRepository(db)
-	userRepo := repositories.NewUserRepository(db)
-	fileService := services.NewFileService(fileRepo, userRepo, cfg)
-
+// @Summary 创建文件夹
+// @Description 在指定目录下创建文件夹
+// @Tags 文件
+// @Accept json
+// @Produce json
+// @Param data body CreateFolderRequest true "文件夹信息"
+// @Success 201 {object} map[string]interface{} "创建成功"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Router /api/v1/files/folder [post]
+func CreateFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := ginutils.GetUserIDFromContext(c)
 		if !ok {
@@ -188,11 +201,15 @@ func CreateFolder(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	}
 }
 
-// DownloadFile 处理文件下载请求 (占位符)
-func DownloadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	fileRepo := repositories.NewFileRepository(db)
-	userRepo := repositories.NewUserRepository(db)
-	fileService := services.NewFileService(fileRepo, userRepo, cfg)
+// @Summary 下载文件
+// @Description 下载指定ID的文件
+// @Tags 文件
+// @Produce application/octet-stream
+// @Param file_id path int true "文件ID"
+// @Success 200 {file} file "文件内容"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Router /api/v1/files/download/{file_id} [get]
+func DownloadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fileIDStr := c.Param("file_id")
 		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
@@ -256,17 +273,17 @@ func DownloadFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 		// 使用 http.ServeContent 进行下载
 		// ServeContent 会自动处理 Content-Length, Content-Type, Content-Disposition, Range 请求等
 		http.ServeContent(c.Writer, c.Request, fileName, lastModified, seekableReader)
-
-		// 注意：io.Copy(c.Writer, fileReader) 这行代码不再需要，
-		// 因为 http.ServeContent 已经处理了文件内容的写入。
 	}
 }
 
-// DeleteFile 处理文件删除请求 (占位符)
-func DeleteFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
-	fileRepo := repositories.NewFileRepository(db)
-	userRepo := repositories.NewUserRepository(db)
-	fileService := services.NewFileService(fileRepo, userRepo, cfg)
+// @Summary 删除文件或文件夹（软删除）
+// @Description 将文件或文件夹移动到回收站
+// @Tags 文件
+// @Param file_id path int true "文件ID"
+// @Success 200 {object} map[string]interface{} "删除成功"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Router /api/v1/files/softdelete/{file_id} [delete]
+func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fileIDStr := c.Param("file_id")
 		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
@@ -293,5 +310,48 @@ func DeleteFile(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 			return
 		}
 		xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d soft-deleted successfully", fileID), nil)
+	}
+}
+
+// @Summary 彻底删除文件或文件夹（永久删除）
+// @Description 将文件或文件夹彻底删除
+// @Tags 文件
+// @Param file_id path int true "文件ID"
+// @Success 200 {object} map[string]interface{} "删除成功"
+// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Router /api/v1/files/permanentdelete/{file_id} [delete]
+func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return // 辅助函数已经处理了错误响应
+		}
+
+		fileIDStr := c.Param("file_id")
+		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+		if err != nil {
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
+			return
+		}
+
+		err = fileService.PermanentDeleteFile(currentUserID, fileID)
+		if err != nil {
+			if err.Error() == "file or folder not found" {
+				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, err.Error())
+				return
+			}
+			if err.Error() == "access denied: file or folder does not belong to user" {
+				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, err.Error())
+				return
+			}
+			if err.Error() == "folder is not empty, cannot permanently delete" {
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to permanently delete file: %v", err))
+			return
+		}
+
+		xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d permanently deleted successfully", fileID), nil)
 	}
 }

@@ -3,14 +3,19 @@ package router
 import (
 	"net/http"
 
+	_ "github.com/3Eeeecho/go-clouddisk/docs"
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/database"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
 	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
+	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
+	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/minio/minio-go/v7"
+	ginSwagger "github.com/swaggo/gin-swagger"
+	"github.com/swaggo/gin-swagger/swaggerFiles"
 	"gorm.io/gorm"
 )
 
@@ -37,6 +42,8 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 		c.JSON(http.StatusOK, gin.H{"message": "pong"})
 	})
 
+	router.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
+
 	v1 := router.Group("/api/v1")
 	{
 		// 认证相关路由 (无需认证)
@@ -61,12 +68,18 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 		// 文件相关路由
 		fileGroup := authenticated.Group("/files")
 		{
-			// 传递 database.DB 和 cfg
-			fileGroup.GET("/", handlers.ListUserFiles(database.DB, cfg))
-			fileGroup.POST("/upload", handlers.UploadFile(database.DB, cfg))
-			fileGroup.POST("/folder", handlers.CreateFolder(database.DB, cfg))
-			fileGroup.GET("/download/:file_id", handlers.DownloadFile(database.DB, cfg))
-			fileGroup.DELETE("/:file_id", handlers.DeleteFile(database.DB, cfg))
+
+			fileRepo := repositories.NewFileRepository(database.DB)
+			userRepo := repositories.NewUserRepository(database.DB)
+			fileService := services.NewFileService(fileRepo, userRepo, cfg, database.DB)
+			// 传递 fileService而不是db
+			fileGroup.GET("/", handlers.ListUserFiles(fileService, cfg))
+			fileGroup.POST("/upload", handlers.UploadFile(fileService, cfg))
+			fileGroup.POST("/folder", handlers.CreateFolder(fileService, cfg))
+			fileGroup.GET("/download/:file_id", handlers.DownloadFile(fileService, cfg))
+			fileGroup.DELETE("/softdelete/:file_id", handlers.SoftDeleteFile(fileService, cfg))
+			fileGroup.DELETE("/permanentdelete/:file_id", handlers.PermanentDeleteFile(fileService, cfg))
+
 		}
 	}
 
