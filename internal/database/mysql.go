@@ -1,10 +1,10 @@
 package database
 
 import (
-	"log"
-
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"go.uber.org/zap"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
@@ -16,12 +16,12 @@ func InitMySQL(cfg *config.MySQLConfig) {
 	var err error
 	DB, err = gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{})
 	if err != nil {
-		log.Fatalf("Failed to connect to MySQL database: %v", err)
+		logger.Fatal("Failed to connect to MySQL database", zap.Error(err))
 	}
 
 	sqlDB, err := DB.DB()
 	if err != nil {
-		log.Fatalf("Failed to get generic database object from GORM: %v", err)
+		logger.Fatal("Failed to get generic database object from GORM", zap.Error(err))
 	}
 
 	// 设置连接池参数
@@ -29,7 +29,7 @@ func InitMySQL(cfg *config.MySQLConfig) {
 	sqlDB.SetMaxOpenConns(100) // 最大打开连接数
 	// sqlDB.SetConnMaxLifetime(time.Hour) // 连接最大复用时间
 
-	log.Println("MySQL database connected successfully!")
+	logger.Info("MySQL database connected successfully!")
 
 	// 自动迁移数据库表结构
 	AutoMigrate()
@@ -43,9 +43,9 @@ func AutoMigrate() {
 		//&models.ShareLink{}, // 如果您决定包含分享功能
 	)
 	if err != nil {
-		log.Fatalf("Failed to auto migrate database tables: %v", err)
+		logger.Fatal("Failed to auto migrate database tables", zap.Error(err))
 	}
-	log.Println("Database tables migrated successfully!")
+	logger.Info("Database tables migrated successfully!")
 }
 
 // CloseMySQLDB 关闭数据库连接
@@ -53,14 +53,14 @@ func CloseMySQLDB() {
 	if DB != nil {
 		sqlDB, err := DB.DB()
 		if err != nil {
-			log.Printf("Error getting generic database object to close: %v", err)
+			logger.Error("Error getting generic database object to close", zap.Error(err))
 			return
 		}
 		err = sqlDB.Close()
 		if err != nil {
-			log.Printf("Error closing MySQL database connection: %v", err)
+			logger.Error("Error closing MySQL database connection", zap.Error(err))
 		} else {
-			log.Println("MySQL database connection closed.")
+			logger.Info("MySQL database connection closed.")
 		}
 	}
 }

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,18 +11,19 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/database"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/router"
+	"go.uber.org/zap"
 )
 
 func main() {
 	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
-		log.Fatalf("Failed to load config: %v", err)
+		logger.Fatal("Failed to load config", zap.Error(err))
 	}
 
 	//初始化日志系统
 	if err := os.MkdirAll("logs", 0755); err != nil {
-		log.Fatalf("Failed to create logs directory: %v", err)
+		logger.Fatal("Failed to create logs directory", zap.Error(err))
 	}
 	logger.InitLogger(cfg.Log.OutputPath, cfg.Log.ErrorPath, cfg.Log.Level)
 	defer logger.Sync() // 确保在应用退出时刷新所有缓冲的日志条目
@@ -56,7 +56,7 @@ func main() {
 	// 优雅关机
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v", err)
+			logger.Fatal("Server failed to start", zap.Error(err))
 		}
 	}()
 
@@ -64,10 +64,10 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-	log.Println("Shutting down server...")
+	logger.Info("Shutting down server...")
 
 	// 这里可以添加更复杂的优雅关机逻辑，例如等待进行中的请求完成
 	// context.WithTimeout(context.Background(), 5*time.Second)
 
-	log.Println("Server exited.")
+	logger.Info("Server exited.")
 }

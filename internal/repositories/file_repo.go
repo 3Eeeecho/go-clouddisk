@@ -4,6 +4,8 @@ import (
 	"log"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -41,7 +43,7 @@ func NewFileRepository(db *gorm.DB) FileRepository {
 
 func (r *fileRepository) Create(file *models.File) error {
 	if err := r.db.Create(file).Error; err != nil {
-		log.Printf("Error creating file: %v", err)
+		logger.Error("Error creating file", zap.Error(err))
 		return err
 	}
 	return nil
@@ -50,7 +52,7 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	var file models.File
 	err := r.db.Unscoped().First(&file, id).Error
 	if err != nil {
-		log.Printf("Error finding file by ID %d: %v", id, err)
+		logger.Error("Error finding file by ID", zap.Int64("id", int64(id)), zap.Error(err))
 		return nil, err
 	}
 	return &file, nil

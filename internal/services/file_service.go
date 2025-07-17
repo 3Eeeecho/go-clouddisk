@@ -6,15 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
@@ -95,7 +96,7 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 		return nil, fmt.Errorf("failed to compute file MD5 hash: %w", err)
 	}
 	fileMD5Hash := hex.EncodeToString(md5Hasher.Sum(nil))
-	log.Printf("File %s (original size %d) MD5 calculated. Bytes read for MD5: %d", originalName, filesize, md5CopyBytes) // 添加日志
+	logger.Info("File MD5 calculated", zap.String("file", originalName), zap.Uint64("size", filesize), zap.Int64("md5CopyBytes", md5CopyBytes))
 
 	// 重要：将 fileContent 的读取位置重置到文件开头，以便再次读取用于写入物理存储
 	// 确保 fileContent 实现了 io.Seeker 接口（在 Handler 中我们使用了临时文件，它实现了）
@@ -131,14 +132,14 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 			UpdatedAt:      time.Now(),
 		}
 		if err := s.fileRepo.Create(newFileRecord); err != nil {
-			log.Printf("Error creating new file record for existing file %s: %v", originalName, err) // 添加日志
+			logger.Error("Error creating new file record for existing file", zap.String("file", originalName), zap.Error(err))
 			return nil, fmt.Errorf("failed to create new file record for existing file: %w", err)
 		}
-		log.Printf("Fast upload successful for file %s. New record ID: %d", originalName, newFileRecord.ID) // 添加日志
-		return newFileRecord, nil                                                                           //秒传成功
+		logger.Info("Fast upload successful for file", zap.String("file", originalName), zap.Uint64("newRecordID", newFileRecord.ID))
+		return newFileRecord, nil //秒传成功
 	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		// 查找文件 MD5 时发生其他数据库错误
-		log.Printf("Error checking existing file by MD5 hash %s: %v", fileMD5Hash, err) // 添加日志
+		logger.Error("Error checking existing file by MD5 hash", zap.String("md5Hash", fileMD5Hash), zap.Error(err))
 		return nil, fmt.Errorf("failed to check existing file by MD5 hash: %w", err)
 	}
 
@@ -159,7 +160,7 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 
 	// 构造本地存储路径,使用 OssKey 作为本地文件名
 	localPath := filepath.Join(s.cfg.Storage.LocalBasePath, storageFileName)
-	log.Printf("Attempting to save physical file to: %s", localPath) // 添加日志
+	logger.Info("Attempting to save physical file", zap.String("path", localPath))
 
 	// 确保存储目录存在
 	err = os.MkdirAll(filepath.Dir(localPath), 0755)
@@ -175,7 +176,7 @@ func (s *fileService) AddFile(userID uint64, originalName, mimeType string, file
 
 	// 从 fileContent 读取并写入到物理文件
 	writtenBytes, err := io.Copy(out, fileContent)
-	log.Printf("Physical file %s written successfully. Actual bytes written: %d", localPath, writtenBytes)
+	logger.Info("Physical file written successfully", zap.String("path", localPath), zap.Int64("writtenBytes", writtenBytes))
 	if err != nil {
 		os.Remove(localPath) // 写入失败，删除不完整文件
 		return nil, fmt.Errorf("failed to write file to disk: %w", err)
@@ -261,28 +262,28 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Printf("File ID %d not found in DB.", fileID) // 添加日志
+			logger.Warn("File not found in DB", zap.Uint64("fileID", fileID))
 			return nil, nil, errors.New("file not found")
 		}
-		log.Printf("Error retrieving file ID %d from DB: %v", fileID, err) // 添加日志
+		logger.Error("Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
 		return nil, nil, fmt.Errorf("failed to retrieve file from DB: %w", err)
 	}
 
 	// 权限检查：确保文件属于当前用户
 	if file.UserID != userID {
-		log.Printf("Access denied for file ID %d. User %d tried to access file of user %d.", file.ID, userID, file.UserID) // 添加日志
+		logger.Warn("Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
 		return nil, nil, errors.New("access denied: file does not belong to user")
 	}
 
 	// 检查是否是文件 (不是文件夹)
 	if file.IsFolder == 1 {
-		log.Printf("Access denied for file ID %d. User %d tried to access file of user %d.", file.ID, userID, file.UserID) // 添加日志
+		logger.Warn("Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
 		return nil, nil, errors.New("cannot download a folder")
 	}
 
 	// 检查文件状态是否正常 (例如，不在回收站)
 	if file.Status != 1 {
-		log.Printf("Attempted to download folder ID %d (Name: %s).", file.ID, file.FileName) // 添加日志
+		logger.Warn("Attempted to download folder", zap.Uint64("folderID", file.ID), zap.String("name", file.FileName))
 		return nil, nil, errors.New("file is not available for download")
 	}
 
@@ -290,17 +291,17 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 	// 注意：这里我们假设 OssKey 已经包含了完整的文件名（MD5Hash + 扩展名）
 	// 并且 s.cfg.Storage.LocalBasePath 已经设置正确
 	localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *file.OssKey)
-	log.Printf("Opening physical file for download from: %s", localFilePath) // 添加日志
+	logger.Info("Opening physical file for download", zap.String("path", localFilePath))
 	fileReader, err := os.Open(localFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			log.Printf("Physical file %s not found on disk for DB record ID %d. Error: %v", localFilePath, file.ID, err) // 添加日志
+			logger.Warn("Physical file not found on disk for DB record ID", zap.Uint64("fileID", file.ID), zap.String("path", localFilePath), zap.Error(err))
 			return nil, nil, errors.New("physical file not found on disk")
 		}
-		log.Printf("Error opening physical file %s for download: %v", localFilePath, err) // 添加日志
+		logger.Error("Error opening physical file for download", zap.String("path", localFilePath), zap.Error(err))
 		return nil, nil, fmt.Errorf("failed to open physical file for download: %w", err)
 	}
-	log.Printf("Physical file %s opened successfully. Returning file and reader.", localFilePath) // 添加日志
+	logger.Info("Physical file opened successfully. Returning file and reader.", zap.String("path", localFilePath))
 
 	return file, fileReader, nil
 }
@@ -310,15 +311,15 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Printf("SoftDeleteFile: File ID %d not found for user %d.", fileID, userID)
+			logger.Warn("SoftDeleteFile: File ID not found for user", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
 			return errors.New("file or folder not found")
 		}
-		log.Printf("SoftDeleteFile: Error retrieving file ID %d for user %d: %v", fileID, userID, err)
+		logger.Error("SoftDeleteFile: Error retrieving file ID", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
 		return fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
 	if file.UserID != userID {
-		log.Printf("SoftDeleteFile: Access denied for file ID %d. User %d tried to soft-delete file of user %d.", fileID, userID, file.UserID)
+		logger.Warn("SoftDeleteFile: Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
 		return errors.New("access denied: file or folder does not belong to user")
 	}
 
@@ -330,14 +331,14 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	// 获取所有需要删除的文件或文件夹及其所有子项
 	filesToDelete, err := s.collectFilesForDeletion(fileID, userID)
 	if err != nil {
-		log.Printf("SoftDeleteFile: Failed to collect files for soft deletion for file ID %d: %v", fileID, err)
+		logger.Error("SoftDeleteFile: Failed to collect files for soft deletion", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("failed to collect files for soft deletion: %w", err)
 	}
 
 	// 开启事务
 	tx := s.db.Begin()
 	if tx.Error != nil {
-		log.Printf("SoftDeleteFile: Failed to begin transaction: %v", tx.Error)
+		logger.Error("SoftDeleteFile: Failed to begin transaction", zap.Error(tx.Error))
 		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
 	}
 	defer func() {
@@ -351,7 +352,7 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 		// 确保文件属于当前用户 (已在前面检查，这里是双重保险)
 		if fileToUpdate.UserID != userID {
 			tx.Rollback()
-			log.Printf("SoftDeleteFile: Attempted to delete file ID %d (user %d) not belonging to current user %d during batch deletion.", fileToUpdate.ID, fileToUpdate.UserID, userID)
+			logger.Warn("SoftDeleteFile: Attempted to delete file ID", zap.Uint64("fileID", fileToUpdate.ID), zap.Uint64("userID", fileToUpdate.UserID), zap.Uint64("currentUserID", userID), zap.Error(errors.New("internal error: file ownership mismatch during batch deletion")))
 			return errors.New("internal error: file ownership mismatch during batch deletion")
 		}
 
@@ -365,20 +366,20 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 
 		if err != nil {
 			tx.Rollback()
-			log.Printf("SoftDeleteFile: Failed to soft-delete file ID %d in DB transaction: %v", fileToUpdate.ID, err)
+			logger.Error("SoftDeleteFile: Failed to soft-delete file ID in DB transaction", zap.Uint64("fileID", fileToUpdate.ID), zap.Error(err))
 			return fmt.Errorf("failed to soft-delete file in transaction: %w", err)
 		}
-		log.Printf("SoftDeleteFile: File ID %d soft-deleted in DB transaction.", fileToUpdate.ID)
+		logger.Info("SoftDeleteFile: File ID soft-deleted in DB transaction.", zap.Uint64("fileID", fileToUpdate.ID))
 	}
 
 	// 提交事务
 	err = tx.Commit().Error
 	if err != nil {
-		log.Printf("SoftDeleteFile: Failed to commit transaction: %v", err)
+		logger.Error("SoftDeleteFile: Failed to commit transaction", zap.Error(err))
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("SoftDeleteFile: File/Folder ID %d and its contents soft-deleted successfully.", fileID)
+	logger.Info("File/Folder ID soft-deleted successfully.", zap.Uint64("fileID", fileID))
 	return nil
 }
 
@@ -386,22 +387,22 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 	rootFile, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Printf("PermanentDeleteFile: File ID %d not found for user %d.", fileID, userID)
+			logger.Warn("PermanentDeleteFile: File ID not found for user", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
 			return errors.New("file or folder not found")
 		}
-		log.Printf("PermanentDeleteFile: Error retrieving file ID %d for user %d: %v", fileID, userID, err)
+		logger.Error("PermanentDeleteFile: Error retrieving file ID", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
 		return fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
 	if rootFile.UserID != userID {
-		log.Printf("PermanentDeleteFile: Access denied for file ID %d. User %d tried to delete file of user %d.", fileID, userID, rootFile.UserID)
+		logger.Warn("PermanentDeleteFile: Access denied for file", zap.Uint64("fileID", rootFile.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", rootFile.UserID))
 		return errors.New("access denied: file or folder does not belong to user")
 	}
 
 	// 收集所有需要永久删除的文件和文件夹
 	filesToPermanentlyDelete, err := s.collectFilesForDeletion(fileID, userID)
 	if err != nil {
-		log.Printf("PermanentDeleteFile: Failed to collect files for permanent deletion for file ID %d: %v", fileID, err)
+		logger.Error("PermanentDeleteFile: Failed to collect files for permanent deletion", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("failed to collect files for permanent deletion: %w", err)
 	}
 
@@ -409,7 +410,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 	// 这是一个简化的事务处理，实际可能需要更复杂的事务管理器
 	tx := s.db.Begin()
 	if tx.Error != nil {
-		log.Printf("PermanentDeleteFile: Failed to begin transaction: %v", tx.Error)
+		logger.Error("PermanentDeleteFile: Failed to begin transaction", zap.Error(tx.Error))
 		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
 	}
 	defer func() {
@@ -439,7 +440,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 		// 确保文件属于当前用户 (双重检查)
 		if fileToPermanentlyDelete.UserID != userID {
 			tx.Rollback()
-			log.Printf("PermanentDeleteFile: Attempted to delete file ID %d (user %d) not belonging to current user %d during batch permanent deletion.", fileToPermanentlyDelete.ID, fileToPermanentlyDelete.UserID, userID)
+			logger.Warn("PermanentDeleteFile: Attempted to delete file ID", zap.Uint64("fileID", fileToPermanentlyDelete.ID), zap.Uint64("userID", fileToPermanentlyDelete.UserID), zap.Uint64("currentUserID", userID), zap.Error(errors.New("internal error: file ownership mismatch during batch permanent deletion")))
 			return errors.New("internal error: file ownership mismatch during batch permanent deletion")
 		}
 
@@ -449,35 +450,35 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 			err = os.Remove(localFilePath)
 			if err != nil {
 				tx.Rollback()
-				log.Printf("PermanentDeleteFile: Failed to delete physical file %s for record ID %d: %v", localFilePath, fileID, err)
+				logger.Error("PermanentDeleteFile: Failed to delete physical file", zap.String("path", localFilePath), zap.Uint64("recordID", fileID), zap.Error(err))
 				return fmt.Errorf("failed to delete physical file: %w", err)
 			}
-			log.Printf("PermanentDeleteFile: Physical file %s deleted.", localFilePath)
+			logger.Info("PermanentDeleteFile: Physical file deleted.", zap.String("path", localFilePath))
 		}
 
 		err = tx.Unscoped().Delete(&models.File{}, fileToPermanentlyDelete.ID).Error
 		if err != nil {
 			tx.Rollback()
-			log.Printf("PermanentDeleteFile: Failed to delete file record ID %d from DB via transaction: %v", fileToPermanentlyDelete.ID, err)
+			logger.Error("PermanentDeleteFile: Failed to delete file record ID from DB via transaction", zap.Uint64("fileID", fileToPermanentlyDelete.ID), zap.Error(err))
 			return fmt.Errorf("failed to delete file record: %w", err)
 		}
-		log.Printf("PermanentDeleteFile: File record ID %d deleted from DB via transaction.", fileToPermanentlyDelete.ID)
+		logger.Info("PermanentDeleteFile: File record ID deleted from DB via transaction.", zap.Uint64("fileID", fileToPermanentlyDelete.ID))
 	}
 
 	tx.Commit()
 	if tx.Error != nil {
-		log.Printf("PermanentDeleteFile: Failed to commit transaction: %v", tx.Error)
+		logger.Error("PermanentDeleteFile: Failed to commit transaction", zap.Error(tx.Error))
 		return fmt.Errorf("failed to commit transaction: %w", tx.Error)
 	}
 
-	log.Printf("PermanentDeleteFile: File ID %d permanently deleted successfully.", fileID)
+	logger.Info("File ID permanently deleted successfully.", zap.Uint64("fileID", fileID))
 	return nil
 }
 
 func (s *fileService) ListRecycleBinFiles(userID uint64) ([]models.File, error) {
 	files, err := s.fileRepo.FindDeletedFilesByUserID(userID)
 	if err != nil {
-		log.Printf("ListRecycleBinFiles: Failed to retrieve deleted files for user %d: %v", userID, err)
+		logger.Error("ListRecycleBinFiles: Failed to retrieve deleted files for user", zap.Uint64("userID", userID), zap.Error(err))
 		return nil, fmt.Errorf("failed to retrieve recycle bin files: %w", err)
 	}
 	return files, nil
@@ -488,16 +489,16 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 	rootFile, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			log.Printf("RestoreFile: File ID %d not found for user %d.", fileID, userID)
+			logger.Warn("RestoreFile: File ID not found for user", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
 			return errors.New("file or folder not found")
 		}
-		log.Printf("RestoreFile: Error retrieving file ID %d for user %d: %v", fileID, userID, err)
+		logger.Error("RestoreFile: Error retrieving file ID", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
 		return fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
 	// 2. 权限检查
 	if rootFile.UserID != userID {
-		log.Printf("RestoreFile: Access denied for file ID %d. User %d tried to restore file of user %d.", fileID, userID, rootFile.UserID)
+		logger.Warn("RestoreFile: Access denied for file", zap.Uint64("fileID", rootFile.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", rootFile.UserID))
 		return errors.New("access denied: file or folder does not belong to user")
 	}
 
@@ -516,7 +517,11 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 	for counter := 1; ; counter++ {
 		existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, originalParentFolderID)
 		if err != nil {
-			log.Printf("RestoreFile: Failed to check existing files in original parent folder %v for user %d: %v", originalParentFolderID, userID, err)
+			if originalParentFolderID != nil {
+				logger.Error("RestoreFile: Failed to check existing files in original parent folder", zap.Uint64("parentFolderID", *originalParentFolderID), zap.Uint64("userID", userID), zap.Error(err))
+			} else {
+				logger.Error("RestoreFile: Failed to check existing files in original parent folder", zap.String("parentFolderID", "nil"), zap.Uint64("userID", userID), zap.Error(err))
+			}
 			return fmt.Errorf("failed to check original folder contents: %w", err)
 		}
 
@@ -547,7 +552,7 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 	// 5.开启事务
 	tx := s.db.Begin()
 	if tx.Error != nil {
-		log.Printf("RestoreFile: Failed to begin transaction: %v", tx.Error)
+		logger.Error("RestoreFile: Failed to begin transaction", zap.Error(tx.Error))
 		return fmt.Errorf("failed to begin transaction: %w", tx.Error)
 	}
 	defer func() {
@@ -563,7 +568,7 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 	filesToRestore, err := s.collectFilesForDeletion(fileID, userID)
 	if err != nil {
 		tx.Rollback()
-		log.Printf("RestoreFile: Failed to collect files for restoration for file ID %d: %v", fileID, err)
+		logger.Error("RestoreFile: Failed to collect files for restoration", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("failed to collect files for restoration: %w", err)
 	}
 
@@ -586,20 +591,20 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 		err = tx.Save(&fileToUpdate).Error
 		if err != nil {
 			tx.Rollback()
-			log.Printf("RestoreFile: Failed to restore file record ID %d in DB transaction: %v", fileToUpdate.ID, err)
+			logger.Error("RestoreFile: Failed to restore file record ID in DB transaction", zap.Uint64("fileID", fileToUpdate.ID), zap.Error(err))
 			return fmt.Errorf("failed to restore file in transaction: %w", err)
 		}
-		log.Printf("RestoreFile: File ID %d restored in DB transaction.", fileToUpdate.ID)
+		logger.Info("RestoreFile: File ID restored in DB transaction.", zap.Uint64("fileID", fileToUpdate.ID))
 	}
 
 	// 8. 提交事务
 	err = tx.Commit().Error
 	if err != nil {
-		log.Printf("RestoreFile: Failed to commit transaction: %v", err)
+		logger.Error("RestoreFile: Failed to commit transaction", zap.Error(err))
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	log.Printf("RestoreFile: File/Folder ID %d restored successfully to its original location (final name: '%s').", fileID, proposedFileName)
+	logger.Info("File/Folder ID restored successfully to its original location (final name: '%s').", zap.Uint64("fileID", fileID), zap.String("finalName", proposedFileName))
 	return nil
 }
 
@@ -638,7 +643,7 @@ func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) 
 
 			err = childQuery.Find(&children).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				log.Printf("SoftDeleteFile: Failed to retrieve children for folder ID %d: %v", currentFolderID, err)
+				logger.Error("SoftDeleteFile: Failed to retrieve children for folder ID", zap.Uint64("folderID", currentFolderID), zap.Error(err))
 				return nil, fmt.Errorf("failed to retrieve folder children: %w", err)
 			}
 
