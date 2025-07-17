@@ -21,13 +21,14 @@ import (
 
 type FileService interface {
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
-	AddFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
+	UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
 	GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) // 获取文件信息用于下载
 	SoftDeleteFile(userID uint64, fileID uint64) error
 	PermanentDeleteFile(userID uint64, fileID uint64) error
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
-	RestoreFile(userID uint64, fileID uint64) error // 从回收站恢复文件
+	RestoreFile(userID uint64, fileID uint64) error                                    // 从回收站恢复文件
+	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error) //修改文件名
 	// CheckFileExistenceByHash(hash string) (*models.File, error) // 根据哈希值检查文件是否存在，用于秒传
 }
 
@@ -74,7 +75,7 @@ func (s *fileService) GetFilesByUserID(userID uint64, parentFolderID *uint64) ([
 	return files, nil
 }
 
-func (s *fileService) AddFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error) {
+func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error) {
 	// 1. 检查父文件夹是否存在和权限
 	if parentFolderID != nil {
 		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
@@ -224,18 +225,13 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 
 	// 2. 检查同一父文件夹下是否已存在同名文件夹
 	// 这是一个简单的检查，更严谨的实现可能需要查询所有子文件和文件夹的名字
-	existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
+	finalFolderName, err := s.resolveFileNameConflict(userID, parentFolderID, folderName, 0, 1) // isFolder = 1
 	if err != nil {
-		return nil, fmt.Errorf("failed to check existing folders: %w", err)
-	}
-	for _, file := range existingFiles {
-		if file.IsFolder == 1 && file.FileName == folderName {
-			return nil, errors.New("folder with this name already exists in the current directory")
-		}
+		return nil, err // 错误已在 resolveFileNameConflict 中记录
 	}
 
 	// 3. 创建文件夹记录
-	folder := &models.File{
+	newFolder := &models.File{
 		UUID:           uuid.New().String(), // 文件夹也需要一个 UUID
 		UserID:         userID,
 		ParentFolderID: parentFolderID,
@@ -251,11 +247,20 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 		UpdatedAt:      time.Now(),
 	}
 
-	if err := s.fileRepo.Create(folder); err != nil {
+	if err := s.fileRepo.Create(newFolder); err != nil {
+		logger.Error("CreateFolder: Failed to create folder in DB",
+			zap.Uint64("userID", userID),
+			zap.Any("parentFolderID", parentFolderID),
+			zap.String("folderName", finalFolderName),
+			zap.Error(err))
 		return nil, fmt.Errorf("failed to create folder record: %w", err)
 	}
 
-	return folder, nil
+	logger.Info("CreateFolder: Folder created successfully",
+		zap.Uint64("folderID", newFolder.ID),
+		zap.Uint64("userID", userID),
+		zap.String("folderName", finalFolderName))
+	return newFolder, nil
 }
 
 func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) {
@@ -509,45 +514,21 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 	}
 
 	// 4. 检查恢复到原始位置是否会引起命名冲突
-	// 查找原始父文件夹下所有 '正常' 状态的文件，检查是否有同名文件。
-	// 这里使用 FindByUserIDAndParentFolderID，它应该只返回 status=1 的文件。
-	originalParentFolderID := rootFile.ParentFolderID
-	originalFileName := rootFile.FileName
-	proposedFileName := rootFile.FileName
-	for counter := 1; ; counter++ {
-		existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, originalParentFolderID)
-		if err != nil {
-			if originalParentFolderID != nil {
-				logger.Error("RestoreFile: Failed to check existing files in original parent folder", zap.Uint64("parentFolderID", *originalParentFolderID), zap.Uint64("userID", userID), zap.Error(err))
-			} else {
-				logger.Error("RestoreFile: Failed to check existing files in original parent folder", zap.String("parentFolderID", "nil"), zap.Uint64("userID", userID), zap.Error(err))
-			}
-			return fmt.Errorf("failed to check original folder contents: %w", err)
-		}
-
-		isConflit := false
-		for _, existingFile := range existingFiles {
-			// 检查同名文件/文件夹，但要排除掉当前要恢复的文件本身（如果它还没被完全删除）
-			// GORM 的软删除机制意味着 rootFile 实际上还在数据库中，只是被标记了。
-			// FindByUserIDAndParentFolderID 不会返回已软删除的，所以这里只检查活跃的文件。
-			if existingFile.FileName == proposedFileName && existingFile.IsFolder == rootFile.IsFolder {
-				//冲突产生
-				isConflit = true
-				break
-			}
-		}
-
-		// 没有冲突，找到可用名称
-		if !isConflit {
-			break
-		}
-
-		//存在名字冲突,生成新文件名
-		// 分离文件名和扩展名 (如果存在)
-		ext := filepath.Ext(originalFileName)
-		nameWithoutExt := originalFileName[:len(originalFileName)-len(ext)]
-		proposedFileName = fmt.Sprintf("%s(%d)%s", nameWithoutExt, counter, ext)
+	// 注意：对于恢复操作，currentFileID 应该传递 0 或一个特殊值，因为恢复的文件在冲突检查时
+	// 通常被视为一个“新”文件，不应该排除自身。
+	// 或者，更直接地，理解为恢复的文件本身就是软删除状态，FindByUserIDAndParentFolderID 不会返回它，
+	// 所以这里的 currentFileID 传递 0 是合适的。
+	finalFileName, err := s.resolveFileNameConflict(userID, rootFile.ParentFolderID, rootFile.FileName, 0, rootFile.IsFolder)
+	if err != nil {
+		return err
 	}
+	if finalFileName != rootFile.FileName {
+		logger.Info("RestoreFile: Naming conflict resolved for restoration",
+			zap.Uint64("fileID", fileID),
+			zap.String("originalName", rootFile.FileName),
+			zap.String("finalName", finalFileName))
+	}
+	rootFile.FileName = finalFileName // 更新为最终确定的文件名
 
 	// 5.开启事务
 	tx := s.db.Begin()
@@ -577,11 +558,15 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 		// 权限再次检查 (尽管 collectFilesForDeletion 已经过滤了)
 		if fileToUpdate.UserID != userID {
 			tx.Rollback()
+			logger.Error("RestoreFile: File ownership mismatch during batch restoration",
+				zap.Uint64("fileToUpdateID", fileToUpdate.ID),
+				zap.Uint64("fileToUpdateOwner", fileToUpdate.UserID),
+				zap.Uint64("currentUserID", userID))
 			return errors.New("internal error: file ownership mismatch during batch restoration")
 		}
 
 		if fileToUpdate.ID == fileID {
-			fileToUpdate.FileName = proposedFileName
+			fileToUpdate.FileName = finalFileName
 		}
 
 		// 恢复操作：将 status 改为 1，清空 deleted_at
@@ -591,7 +576,9 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 		err = tx.Save(&fileToUpdate).Error
 		if err != nil {
 			tx.Rollback()
-			logger.Error("RestoreFile: Failed to restore file record ID in DB transaction", zap.Uint64("fileID", fileToUpdate.ID), zap.Error(err))
+			logger.Error("RestoreFile: Failed to restore file record in DB transaction",
+				zap.Uint64("fileToUpdateID", fileToUpdate.ID),
+				zap.Error(err))
 			return fmt.Errorf("failed to restore file in transaction: %w", err)
 		}
 		logger.Info("RestoreFile: File ID restored in DB transaction.", zap.Uint64("fileID", fileToUpdate.ID))
@@ -604,8 +591,90 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 		return fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	logger.Info("File/Folder ID restored successfully to its original location (final name: '%s').", zap.Uint64("fileID", fileID), zap.String("finalName", proposedFileName))
+	logger.Info("RestoreFile: File/Folder restored successfully",
+		zap.Uint64("fileID", fileID),
+		zap.String("finalName", finalFileName))
 	return nil
+}
+
+func (s *fileService) RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error) {
+	// 1. 获取要改名的文件
+	fileToRename, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Info("RenameFile: File not found", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
+			return nil, errors.New("file or folder not found")
+		}
+		logger.Error("RenameFile: Error retrieving file", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("failed to retrieve file: %w", err)
+	}
+
+	// 2. 权限检查
+	if fileToRename.UserID != userID {
+		logger.Warn("RenameFile: Access denied", zap.Uint64("fileID", fileID), zap.Uint64("requesterID", userID), zap.Uint64("ownerID", fileToRename.UserID))
+		return nil, errors.New("access denied: file or folder does not belong to user")
+	}
+
+	// 3. 检查文件是否处于正常状态 (未被软删除)
+	if fileToRename.Status != 1 || fileToRename.DeletedAt.Valid { // DeletedAt.Valid 表示它被软删除了
+		logger.Warn("RenameFile: Cannot rename a deleted or abnormal file", zap.Uint64("fileID", fileID), zap.Uint8("status", fileToRename.Status))
+		return nil, errors.New("cannot rename a deleted or abnormal file/folder")
+	}
+
+	// 4. 如果新旧文件名相同，直接返回，不做任何操作
+	if fileToRename.FileName == newFileName {
+		logger.Info("RenameFile: New file name is same as old, no operation needed", zap.Uint64("fileID", fileID), zap.String("fileName", newFileName))
+		return fileToRename, nil
+	}
+
+	// 5. 处理命名冲突,检查当前目录下是否存在同名文件
+	finalFileName, err := s.resolveFileNameConflict(userID, fileToRename.ParentFolderID, newFileName, fileToRename.ID, fileToRename.IsFolder)
+	if err != nil {
+		return nil, err // 错误已在 resolveFileNameConflict 中记录
+	}
+	fileToRename.FileName = finalFileName
+
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		tx.Rollback()
+		logger.Error("RenameFile: Failed to update file name in DB transaction",
+			zap.Uint64("fileID", fileToRename.ID),
+			zap.String("newName", fileToRename.FileName),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to update file name in transaction: %w", err)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	err = tx.Save(fileToRename).Error
+	if err != nil {
+		tx.Rollback()
+		logger.Error("RenameFile: Failed to update file name in DB transaction",
+			zap.Uint64("fileID", fileToRename.ID),
+			zap.String("newName", fileToRename.FileName),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to update file name in transaction: %w", err)
+	}
+
+	logger.Info("RenameFile: File name updated successfully in DB transaction",
+		zap.Uint64("fileID", fileToRename.ID),
+		zap.String("newName", fileToRename.FileName))
+
+	err = tx.Commit().Error
+	if err != nil {
+		logger.Error("RenameFile: Failed to commit transaction", zap.Error(err))
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	logger.Info("RenameFile: File/Folder renamed successfully",
+		zap.Uint64("fileID", fileID),
+		zap.String("finalName", fileToRename.FileName))
+
+	return fileToRename, nil
 }
 
 // ---helpers---
@@ -659,4 +728,57 @@ func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) 
 		}
 	}
 	return filesToDelete, nil
+}
+
+// resolveFileNameConflict 检查指定父文件夹下是否有命名冲突，并返回一个不冲突的文件名。
+// 如果存在冲突，它会自动在文件名后添加 (1), (2) 等后缀。
+// currentFileID: 当前正在操作的文件/文件夹的 ID。在重命名自身时，需要排除它与自身名称的冲突检查。
+// isFolder: 指示待检查的项是文件夹 (1) 还是文件 (0)。
+func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uint64, originalProposedName string, currentFileID uint64, isFolder uint8) (string, error) {
+	existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		logger.Error("resolveFileNameConflict: Failed to check existing files for naming conflict",
+			zap.Uint64("userID", userID),
+			zap.Any("parentFolderID", parentFolderID),
+			zap.Error(err))
+		return "", fmt.Errorf("failed to check folder contents for naming conflict: %w", err)
+	}
+
+	proposedFileName := originalProposedName
+	for counter := 1; ; counter++ {
+
+		isConflict := false
+		for _, existingFile := range existingFiles {
+			// 冲突判断条件：
+			// 1. 文件名相同 (proposedFileName)
+			// 2. 文件类型相同 (都是文件或都是文件夹)
+			// 3. 不是当前正在操作的文件/文件夹本身 (如果 currentFileID 为 0 表示是新创建，则无需排除)
+			if existingFile.FileName == proposedFileName &&
+				existingFile.IsFolder == isFolder &&
+				(currentFileID == 0 || existingFile.ID != currentFileID) {
+				isConflict = true
+				break
+			}
+		}
+
+		if !isConflict {
+			break // 没有冲突，找到可用名称
+		}
+
+		// 存在冲突，生成新文件名
+		ext := filepath.Ext(originalProposedName) // 总是基于原始提议的名称提取扩展名
+		nameWithoutExt := originalProposedName[:len(originalProposedName)-len(ext)]
+		proposedFileName = fmt.Sprintf("%s(%d)%s", nameWithoutExt, counter, ext)
+	}
+
+	// 如果文件名被修改了，记录日志
+	if proposedFileName != originalProposedName {
+		logger.Info("FileNameConflictResolved",
+			zap.String("originalProposedName", originalProposedName),
+			zap.String("finalName", proposedFileName),
+			zap.Uint64("userID", userID),
+			zap.Any("parentFolderID", parentFolderID))
+	}
+
+	return proposedFileName, nil
 }

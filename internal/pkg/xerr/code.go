@@ -12,9 +12,12 @@ const (
 	CodeInternalServerError = 2001 // 服务器内部错误
 	CodeUnauthorized        = 2002 // 未认证
 	CodeForbidden           = 2003 // 无权限
+	CodeAccessDenied        = 2004 // 权限不足
+	CodeInvalidStatus       = 2005 // 资源状态不正确
 
 	CodeResourceAlreadyExists = 3001 //文件夹已存在
 	CodeNotFound              = 3002 //文件不存在
 	CodeFileNotAvailable      = 3003 //文件无法获取
 	CodeConflict              = 3004 //文件冲突
+
 )

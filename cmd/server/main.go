@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/database"
@@ -29,9 +32,9 @@ func main() {
 	defer logger.Sync() // 确保在应用退出时刷新所有缓冲的日志条目
 
 	// 初始化数据库连接
-	database.InitMySQL(&config.AppConfig.MySQL)
+	database.InitMySQL(&cfg.MySQL)
 	defer database.CloseMySQLDB() // 确保在 main 函数退出时关闭数据库连接
-
+	log.Println("MySQL init successfully.")
 	// 初始化 Redis 连接
 	// client := database.InitRedis(&config.AppConfig.Redis)
 	// defer database.CloseRedis(client)
@@ -66,8 +69,18 @@ func main() {
 	<-quit
 	logger.Info("Shutting down server...")
 
-	// 这里可以添加更复杂的优雅关机逻辑，例如等待进行中的请求完成
-	// context.WithTimeout(context.Background(), 5*time.Second)
+	// 创建一个带超时的上下文，给服务器一些时间来完成正在处理的请求
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second) // 5 秒超时
+	defer cancel()                                                          // 确保上下文资源在函数退出时被释放
 
-	logger.Info("Server exited.")
+	// 尝试优雅地关闭服务器
+	if err := srv.Shutdown(ctx); err != nil {
+		// 如果 Shutdown 返回错误（例如超时），则强制关闭
+		logger.Error("服务器在优雅关机过程中因错误而被迫停止", zap.Error(err))
+	} else {
+		logger.Info("服务器已优雅停止。")
+	}
+
+	// 最后一条日志，在应用程序真正退出之前
+	logger.Info("Go 云盘应用程序已退出。")
 }

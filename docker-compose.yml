@@ -1,48 +1,70 @@
-version: '3.8'
-
 services:
-  # # MySQL 数据库服务
-  # mysql:
-  #   image: mysql:8.0 # 使用 MySQL 8.0 稳定版
-  #   container_name: mysql
-  #   command:
-  #     # 将mysql8.0默认密码策略 修改为 原先 策略 (mysql8.0对其默认策略做了更改 会导致密码无法匹配) 
-  #     --default-authentication-plugin=mysql_native_password
-  #     --character-set-server=utf8mb4
-  #     --collation-server=utf8mb4_general_ci
-  #     --explicit_defaults_for_timestamp=true
-  #     --lower_case_table_names=1
-  #   restart: always
-  #   environment:
-  #     MYSQL_ROOT_PASSWORD: root # root 用户密码
-  #     MYSQL_DATABASE: "clouddisk_db"  # 数据库名称，与您之前确认的保持一致
-  #     MYSQL_USER: app_user            # 应用用户 <-- 我们为应用创建的用户
-  #     MYSQL_PASSWORD: app_password    # 应用用户密码
-  #   ports:
-  #     - "33069:3306" # 映射端口
-  #   volumes:
-  #     - mysql_data:/var/lib/mysql # 数据持久化
-  #     - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro # 挂载初始化SQL脚本
-  #   healthcheck:
-  #     test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-  #     timeout: 20s
-  #     retries: 10
-  #     start_period: 10s
+  app:
+    container_name: app
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./logs:/app/logs # Go 应用日志输出路径，宿主机挂载到容器
+    environment:
+      TZ: Asia/Shanghai
+      LOG_OUTPUT_PATH: "/app/logs/app.log"
+      LOG_ERROR_PATH: "/app/logs/error.log"
+      LOG_LEVEL: "info"
+    depends_on:
+      mysql:
+        condition: service_healthy 
+      redis:
+        condition: service_healthy 
+      minio:
+        condition: service_healthy 
+      elasticsearch:
+        condition: service_healthy 
 
-  # # Redis 缓存服务
-  # redis:
-  #   image: redis:latest # 使用轻量级 Redis 镜像
-  #   container_name: redis
-  #   restart: always
-  #   ports:
-  #     - "36379:6379" # 映射端口
-  #   volumes:
-  #     - redis_data:/data # 数据持久化
-  #   healthcheck:
-  #     test: ["CMD", "redis-cli", "ping"]
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 5s
+  # MySQL 数据库服务
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    command: 
+      --default-authentication-plugin=mysql_native_password
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_general_ci
+      --explicit_defaults_for_timestamp=true
+      --lower_case_table_names=1
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: "clouddisk_db"
+      MYSQL_USER: eecho
+      MYSQL_PASSWORD: eecho
+    ports:
+      - "33069:3306" # 保持与你主配置相同的端口，方便测试
+    volumes:
+      - mysql_data:/var/lib/mysql # 使用一个独立的卷，避免与主服务冲突
+      - ./scripts/mysql/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck: # 保持健康检查，确保它真正启动
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p$$MYSQL_ROOT_PASSWORD"]
+      timeout: 20s
+      retries: 10
+      start_period: 10s
+
+  # Redis 缓存服务
+  redis:
+    image: redis:latest # 使用轻量级 Redis 镜像
+    container_name: redis
+    restart: always
+    ports:
+      - "36379:6379" # 映射端口
+    volumes:
+      - redis_data:/data # 数据持久化
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      timeout: 10s
+      retries: 5
+      start_period: 5s
 
   # MinIO 对象存储服务 (S3 兼容)
   minio:
@@ -70,6 +92,7 @@ services:
     container_name: rabbitmq
     restart: always
     environment:
+      TZ: Asia/Shanghai
       RABBITMQ_DEFAULT_USER: rabbitmq_user # RabbitMQ 用户
       RABBITMQ_DEFAULT_PASS: rabbitmq_password # RabbitMQ 密码
     ports:
@@ -83,8 +106,58 @@ services:
       retries: 5
       start_period: 5s
 
+
+  # Elasticsearch 服务
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.3
+    container_name: elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false # <--- 临时禁用安全，生产环境请务必启用并配置！
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data # 数据持久化
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200 || exit 1"]
+      interval: 10s    # 每隔10秒检查一次
+      timeout: 10s     # 检查超时时间10秒
+      retries: 5       # 失败5次后标记为不健康
+      start_period: 60s # 在启动后的60秒内，如果健康检查失败不计入重试次数，给ES充足的启动时间
+
+    # Kibana 服务
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.0.3
+    container_name: kibana
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    depends_on:
+      - elasticsearch
+
+  # Filebeat 服务
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:9.0.3
+    container_name: filebeat
+    user: root # 确保Filebeat有权限读取日志文件
+    volumes:
+      - ./deploy/filebeat/conf/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro # 挂载Filebeat配置
+      - ./logs:/usr/share/filebeat/logs:ro # 挂载Go应用日志目录
+      - /var/log:/var/log:ro # 挂载宿主机的 /var/log 目录到容器内部
+      # 如果需要持久化Filebeat内部数据（如状态文件），可以添加：
+      # - filebeat_data:/usr/share/filebeat/data
+    command: ["filebeat", "-e", "-c", "/usr/share/filebeat/filebeat.yml"]
+    depends_on:
+      - elasticsearch # 确保在Filebeat启动前Elasticsearch已启动
+      - app # 确保在Filebeat启动前Go应用已启动并可能开始产生日志
+
+
 volumes:
   mysql_data:
   redis_data:
   minio_data:
   rabbitmq_data:
+  esdata:

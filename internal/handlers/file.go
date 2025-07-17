@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,14 +11,21 @@ import (
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
+	"go.uber.org/zap"
 )
 
 type CreateFolderRequest struct {
 	FolderName     string  `json:"folder_name" binding:"required"`
 	ParentFolderID *uint64 `json:"parent_folder_id"` // 可选，根目录为 null
+}
+
+// 定义 RenameFileRequest 结构体
+type RenameFileRequest struct {
+	NewFileName string `json:"new_file_name" binding:"required"`
 }
 
 // @Summary 获取用户文件列表
@@ -133,7 +141,7 @@ func UploadFile(fileService services.FileService, cfg *config.Config) gin.Handle
 		tempFile.Seek(0, 0) // 将临时文件指针重置到开头，以便 AddFile 可以读取
 
 		// 3. 调用文件服务处理文件
-		uploadedFile, err := fileService.AddFile(currentUserID, originalName, mimeType, uint64(filesize), parentFolderID, tempFile)
+		uploadedFile, err := fileService.UploadFile(currentUserID, originalName, mimeType, uint64(filesize), parentFolderID, tempFile)
 		if err != nil {
 			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to upload file: %v", err))
 			return
@@ -417,5 +425,65 @@ func RestoreFile(fileService services.FileService) gin.HandlerFunc {
 		}
 
 		xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d restored successfully to its original location", fileID), nil)
+	}
+}
+
+// RenameFile 处理文件/文件夹的改名请求
+// PUT /api/v1/files/rename/:id
+func RenameFile(fileService services.FileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		fileIDStr := c.Param("id")
+		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+		if err != nil {
+			logger.Warn("RenameFile: Invalid file ID format", zap.String("fileIDStr", fileIDStr), zap.Error(err))
+			xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID")
+			return
+		}
+
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return
+		}
+
+		var req RenameFileRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			logger.Warn("RenameFile: Invalid request body", zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body: " + err.Error()})
+			return
+		}
+
+		// 业务逻辑调用
+		renamedFile, err := fileService.RenameFile(currentUserID, fileID, req.NewFileName)
+		if err != nil {
+			// 记录详细错误日志
+			logger.Error("RenameFile: Failed to rename file",
+				zap.Uint64("fileID", fileID),
+				zap.Uint64("userID", currentUserID),
+				zap.String("newFileName", req.NewFileName),
+				zap.Error(err))
+
+			if errors.Is(err, errors.New("file or folder not found")) {
+				xerr.AbortWithError(c, http.StatusNotFound, xerr.CodeNotFound, err.Error())
+			} else if errors.Is(err, errors.New("access denied: file or folder does not belong to user")) {
+				xerr.AbortWithError(c, http.StatusForbidden, xerr.CodeAccessDenied, err.Error()) // 403 Forbidden 更合适
+			} else if errors.Is(err, errors.New("cannot rename a deleted or abnormal file/folder")) {
+				xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidStatus, err.Error()) // 400 Bad Request
+			} else if errors.Is(err, errors.New("invalid request body")) { // 这个错误应该在 ShouldBindJSON 处处理了
+				xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+			} else {
+				// 对于其他未知的内部错误，返回 Internal Server Error
+				xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Failed to rename file: "+err.Error())
+			}
+			return
+		}
+
+		logger.Info("RenameFile: File renamed successfully",
+			zap.Uint64("fileID", fileID),
+			zap.String("oldName", c.Param("id")), // 这里其实不是老名字，只是用于日志记录
+			zap.String("newName", renamedFile.FileName))
+
+		xerr.Success(c, http.StatusOK, "File/folder renamed successfully", gin.H{
+			"file_info": renamedFile,
+		})
 	}
 }
