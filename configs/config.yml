@@ -27,3 +27,8 @@ jwt:
 
 storageconfig:
   local_base_path: "./uploads/data"
+
+log:
+  output_path: "logs/app.log"
+  error_path: "logs/error.log"
+  level: "info" # debug, info, warn, error, dpanic, panic, fatal
