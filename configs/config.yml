@@ -2,10 +2,10 @@ server:
   port: "8080"
 
 mysql:
-  dsn: "root:root@tcp(mysql:3306)/clouddisk_db?charset=utf8mb4&parseTime=True&loc=Local"
+  dsn: "root:root@tcp(localhost:3306)/clouddisk_db?charset=utf8mb4&parseTime=True&loc=Local"
 
 redis:
-  addr: "redis:6379"
+  addr: "localhost:6379"
   password: ""
   db: 0
 
@@ -32,3 +32,10 @@ log:
   output_path: "logs/app.log"
   error_path: "logs/error.log"
   level: "info" # debug, info, warn, error, dpanic, panic, fatal
+
+elasticsearch:
+  addresses: ["http://localhost:9200"] # 使用 Docker Compose 服务名和内部端口
+  username: "" # 如果 Elasticsearch 启用安全认证，需要填写
+  password: "" # 如果 Elasticsearch 启用安全认证，需要填写
+  # cloud_id: ""                           # 如果使用 Elastic Cloud，需要填写
+  # api_key: ""                            # 如果使用 API Key 认证

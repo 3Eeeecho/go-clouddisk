@@ -53,39 +53,49 @@ func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.
 
 // GetFilesByUserID 获取用户在指定文件夹下的文件和文件夹列表
 func (s *fileService) GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error) {
+	logger.Debug("GetFilesByUserID called", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID))
 	// 简单检查父文件夹是否存在（如果 parentFolderID 不为 0）
 	if parentFolderID != nil {
 		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
+				logger.Warn("Parent folder not found", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 				return nil, errors.New("parent folder not found")
 			}
+			logger.Error("Failed to check parent folder", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 			return nil, fmt.Errorf("failed to check parent folder: %w", err)
 		}
 		// 确保父文件夹属于当前用户且确实是文件夹
 		if parentFolder.ID != userID || parentFolder.IsFolder != 1 {
+			logger.Warn("Invalid parent folder or not a folder", zap.Any("parentFolderID", parentFolderID), zap.Any("parentFolder", parentFolder))
 			return nil, errors.New("invalid parent folder or not a folder")
 		}
 	}
 
 	files, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
 	if err != nil {
+		logger.Error("Failed to get files for user in folder", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 		return nil, fmt.Errorf("failed to get files for user %d in folder %d: %w", userID, parentFolderID, err)
 	}
+	logger.Info("GetFilesByUserID success", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.Int("fileCount", len(files)))
 	return files, nil
 }
 
 func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error) {
+	logger.Debug("UploadFile called", zap.Uint64("userID", userID), zap.String("originalName", originalName), zap.Uint64("filesize", filesize), zap.Any("parentFolderID", parentFolderID))
 	// 1. 检查父文件夹是否存在和权限
 	if parentFolderID != nil {
 		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
+				logger.Warn("Parent folder not found", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 				return nil, errors.New("parent folder not found")
 			}
+			logger.Error("Failed to check parent folder", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 			return nil, fmt.Errorf("failed to check parent folder: %w", err)
 		}
 		if parentFolder.UserID != userID || parentFolder.IsFolder != 1 {
+			logger.Warn("Invalid parent folder or not a folder", zap.Any("parentFolderID", parentFolderID), zap.Any("parentFolder", parentFolder))
 			return nil, errors.New("invalid parent folder or not a folder")
 		}
 	}
@@ -94,6 +104,7 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	md5Hasher := md5.New()
 	md5CopyBytes, err := io.Copy(md5Hasher, fileContent)
 	if err != nil {
+		logger.Error("Failed to compute file MD5 hash", zap.String("file", originalName), zap.Error(err))
 		return nil, fmt.Errorf("failed to compute file MD5 hash: %w", err)
 	}
 	fileMD5Hash := hex.EncodeToString(md5Hasher.Sum(nil))
@@ -104,16 +115,18 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	if seeker, ok := fileContent.(io.Seeker); ok {
 		_, err := seeker.Seek(0, 0)
 		if err != nil {
+			logger.Error("Failed to reset file reader position", zap.String("file", originalName), zap.Error(err))
 			return nil, fmt.Errorf("failed to reset file reader position: %w", err)
 		}
 	} else {
-		// 理论上不会发生，因为 Handler 中已经确保了是可 Seek 的临时文件
+		logger.Error("fileContent reader is not seekable, cannot re-read for storage", zap.String("file", originalName))
 		return nil, errors.New("fileContent reader is not seekable, cannot re-read for storage")
 	}
 
 	// 3. 检查文件是否已存在（秒传逻辑）
 	existingFileByMD5, err := s.fileRepo.FindFileByMD5Hash(fileMD5Hash)
 	if err == nil && existingFileByMD5 != nil {
+		logger.Info("Fast upload: file already exists, creating new record", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
 		// 文件内容已存在，执行秒传：直接创建新的文件记录指向旧的物理文件
 		// 注意：这里的 UUID 和 OssKey/OssBucket 应该引用现有的物理文件信息
 		// 我们假设 existingFileByMD5 包含了正确的 OSS 相关信息
@@ -145,6 +158,7 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	}
 
 	// 4. 文件内容不存在，需要上传到物理存储 (MinIO/S3 或本地)
+	logger.Info("Uploading new file to storage", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
 	// 生成新的 UUID 作为文件在OSS中的唯一标识
 	newUUID := uuid.New().String()
 
@@ -166,11 +180,13 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	// 确保存储目录存在
 	err = os.MkdirAll(filepath.Dir(localPath), 0755)
 	if err != nil {
+		logger.Error("Failed to create storage directory", zap.String("path", localPath), zap.Error(err))
 		return nil, fmt.Errorf("failed to create storage directory: %w", err)
 	}
 
 	out, err := os.Create(localPath)
 	if err != nil {
+		logger.Error("Failed to create file on disk", zap.String("path", localPath), zap.Error(err))
 		return nil, fmt.Errorf("failed to create file on disk at %s: %w", localPath, err)
 	}
 	defer out.Close()
@@ -179,11 +195,13 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	writtenBytes, err := io.Copy(out, fileContent)
 	logger.Info("Physical file written successfully", zap.String("path", localPath), zap.Int64("writtenBytes", writtenBytes))
 	if err != nil {
+		logger.Error("Failed to write file to disk", zap.String("path", localPath), zap.Error(err))
 		os.Remove(localPath) // 写入失败，删除不完整文件
 		return nil, fmt.Errorf("failed to write file to disk: %w", err)
 	}
 
 	// 5. 将文件元数据记录到数据库
+	logger.Debug("Saving file record to database", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
 	fileRecord := &models.File{
 		UUID:           newUUID,
 		UserID:         userID,
@@ -201,24 +219,30 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	}
 
 	if err := s.fileRepo.Create(fileRecord); err != nil {
+		logger.Error("Failed to save file record to database", zap.String("file", originalName), zap.Error(err))
 		os.Remove(localPath) // 如果数据库记录失败，删除已经写入的物理文件
 		return nil, fmt.Errorf("failed to save file record to database: %w", err)
 	}
 
+	logger.Info("UploadFile success", zap.String("file", originalName), zap.Uint64("userID", userID), zap.String("md5", fileMD5Hash))
 	return fileRecord, nil
 }
 
 func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error) {
+	logger.Debug("CreateFolder called", zap.Uint64("userID", userID), zap.String("folderName", folderName), zap.Any("parentFolderID", parentFolderID))
 	// 1. 检查父文件夹是否存在和权限 (与 AddFile 类似)
 	if parentFolderID != nil {
 		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
 		if err != nil {
 			if errors.Is(err, gorm.ErrRecordNotFound) {
+				logger.Warn("Parent folder not found", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 				return nil, errors.New("parent folder not found")
 			}
+			logger.Error("Failed to check parent folder", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 			return nil, fmt.Errorf("failed to check parent folder: %w", err)
 		}
 		if parentFolder.UserID != userID || parentFolder.IsFolder != 1 {
+			logger.Warn("Invalid parent folder or not a folder", zap.Any("parentFolderID", parentFolderID), zap.Any("parentFolder", parentFolder))
 			return nil, errors.New("invalid parent folder or not a folder")
 		}
 	}
@@ -227,6 +251,7 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 	// 这是一个简单的检查，更严谨的实现可能需要查询所有子文件和文件夹的名字
 	finalFolderName, err := s.resolveFileNameConflict(userID, parentFolderID, folderName, 0, 1) // isFolder = 1
 	if err != nil {
+		logger.Error("CreateFolder: resolveFileNameConflict failed", zap.Error(err))
 		return nil, err // 错误已在 resolveFileNameConflict 中记录
 	}
 
@@ -481,11 +506,13 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 }
 
 func (s *fileService) ListRecycleBinFiles(userID uint64) ([]models.File, error) {
+	logger.Debug("ListRecycleBinFiles called", zap.Uint64("userID", userID))
 	files, err := s.fileRepo.FindDeletedFilesByUserID(userID)
 	if err != nil {
 		logger.Error("ListRecycleBinFiles: Failed to retrieve deleted files for user", zap.Uint64("userID", userID), zap.Error(err))
 		return nil, fmt.Errorf("failed to retrieve recycle bin files: %w", err)
 	}
+	logger.Info("ListRecycleBinFiles success", zap.Uint64("userID", userID), zap.Int("fileCount", len(files)))
 	return files, nil
 }
 
@@ -682,8 +709,10 @@ func (s *fileService) RenameFile(userID uint64, fileID uint64, newFileName strin
 // 这里使用 BFS (广度优先搜索) 遍历，避免深层递归导致的栈溢出
 // 返回一个切片，包含所有需要处理的 models.File 记录
 func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) ([]models.File, error) {
+	logger.Debug("collectFilesForDeletion called", zap.Uint64("rootFileID", rootFileID), zap.Uint64("userID", userID))
 	rootFile, err := s.fileRepo.FindByID(rootFileID)
 	if err != nil {
+		logger.Error("collectFilesForDeletion: root file not found", zap.Uint64("rootFileID", rootFileID), zap.Error(err))
 		return nil, err // 错误会在调用方处理
 	}
 	filesToDelete := []models.File{*rootFile} // 包含根文件/文件夹自身
@@ -699,12 +728,12 @@ func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) 
 			currentFolderID := queue[0]
 			queue = queue[1:]
 
-			// 查找当前文件夹下的所有文件和子文件夹 (包括已软删除的，因为要一起永久删除)
+			logger.Debug("collectFilesForDeletion: processing folder", zap.Uint64("currentFolderID", currentFolderID))
 			var children []models.File
 			// 注意：这里需要确保能够查到所有状态的子项，包括 Status 为 0 的，因为它们也应该被软删除或更新 deleted_at
 			// FindByUserIDAndParentFolderID 默认只查 status=1，这里需要更灵活的查询
 			childQuery := s.db.Unscoped().Where("user_id = ?", userID)
-			if currentFolderID == 0 { // 根目录
+			if currentFolderID == 0 {
 				childQuery = childQuery.Where("parent_folder_id IS NULL")
 			} else {
 				childQuery = childQuery.Where("parent_folder_id = ?", currentFolderID)
@@ -712,12 +741,13 @@ func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) 
 
 			err = childQuery.Find(&children).Error
 			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				logger.Error("SoftDeleteFile: Failed to retrieve children for folder ID", zap.Uint64("folderID", currentFolderID), zap.Error(err))
+				logger.Error("collectFilesForDeletion: failed to retrieve children", zap.Uint64("folderID", currentFolderID), zap.Error(err))
 				return nil, fmt.Errorf("failed to retrieve folder children: %w", err)
 			}
 
 			for _, child := range children {
 				if !processedIDs[child.ID] {
+					logger.Debug("collectFilesForDeletion: found child", zap.Uint64("childID", child.ID), zap.String("childName", child.FileName))
 					filesToDelete = append(filesToDelete, child)
 					processedIDs[child.ID] = true
 					if child.IsFolder == 1 {
@@ -727,6 +757,7 @@ func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) 
 			}
 		}
 	}
+	logger.Info("collectFilesForDeletion finished", zap.Int("totalFiles", len(filesToDelete)), zap.Uint64("rootFileID", rootFileID))
 	return filesToDelete, nil
 }
 
@@ -735,6 +766,7 @@ func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) 
 // currentFileID: 当前正在操作的文件/文件夹的 ID。在重命名自身时，需要排除它与自身名称的冲突检查。
 // isFolder: 指示待检查的项是文件夹 (1) 还是文件 (0)。
 func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uint64, originalProposedName string, currentFileID uint64, isFolder uint8) (string, error) {
+	logger.Debug("resolveFileNameConflict called", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.String("originalProposedName", originalProposedName), zap.Uint64("currentFileID", currentFileID), zap.Uint8("isFolder", isFolder))
 	existingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
 	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		logger.Error("resolveFileNameConflict: Failed to check existing files for naming conflict",
@@ -746,7 +778,6 @@ func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uin
 
 	proposedFileName := originalProposedName
 	for counter := 1; ; counter++ {
-
 		isConflict := false
 		for _, existingFile := range existingFiles {
 			// 冲突判断条件：
@@ -760,7 +791,6 @@ func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uin
 				break
 			}
 		}
-
 		if !isConflict {
 			break // 没有冲突，找到可用名称
 		}
@@ -769,6 +799,7 @@ func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uin
 		ext := filepath.Ext(originalProposedName) // 总是基于原始提议的名称提取扩展名
 		nameWithoutExt := originalProposedName[:len(originalProposedName)-len(ext)]
 		proposedFileName = fmt.Sprintf("%s(%d)%s", nameWithoutExt, counter, ext)
+		logger.Debug("resolveFileNameConflict: conflict found, trying new name", zap.String("proposedFileName", proposedFileName))
 	}
 
 	// 如果文件名被修改了，记录日志
@@ -779,6 +810,6 @@ func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uin
 			zap.Uint64("userID", userID),
 			zap.Any("parentFolderID", parentFolderID))
 	}
-
+	logger.Debug("resolveFileNameConflict finished", zap.String("finalName", proposedFileName))
 	return proposedFileName, nil
 }

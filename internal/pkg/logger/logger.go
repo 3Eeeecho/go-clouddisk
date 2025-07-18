@@ -21,20 +21,21 @@ var (
 func InitLogger(outputPath, errorPath string, level string) {
 	once.Do(func() {
 		var l zapcore.Level
-		if err := l.UnmarshalText([]byte(level)); err != nil {
+		var err error
+		if err = l.UnmarshalText([]byte(level)); err != nil {
 			l = zap.InfoLevel // 默认 INFO 级别
 			fmt.Fprintf(os.Stderr, "Failed to parse log level '%s', defaulting to info: %v\n", level, err)
 		}
+
 		// 创建生产环境配置
 		cfg := zap.NewProductionConfig()
 
-		cfg.OutputPaths = []string{outputPath}
-		cfg.ErrorOutputPaths = []string{errorPath}
+		cfg.OutputPaths = []string{outputPath, "stdout"}
+		cfg.ErrorOutputPaths = []string{errorPath, "stderr"}
 		cfg.Encoding = "json"
-		cfg.EncoderConfig.EncodeTime = zapcore.RFC3339TimeEncoder //// 自定义时间格式 (RFC3339 是 ISO 8601 的子集，ES 友好)
+		cfg.EncoderConfig.EncodeTime = zapcore.TimeEncoderOfLayout("2006-01-02 15:04:05.000")
 		cfg.EncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
 
-		var err error
 		log, err = cfg.Build()
 		if err != nil {
 			panic(fmt.Sprintf("Failed to build zap logger: %v", err))

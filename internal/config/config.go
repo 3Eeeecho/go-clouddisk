@@ -10,14 +10,15 @@ import (
 
 // Config 结构体包含所有应用的配置
 type Config struct {
-	Server   ServerConfig   `mapstructure:"server"` // `mapstructure` 标签用于Viper绑定结构体
-	MySQL    MySQLConfig    `mapstructure:"mysql"`
-	Redis    RedisConfig    `mapstructure:"redis"`
-	MinIO    MinIOConfig    `mapstructure:"minio"`
-	RabbitMQ RabbitMQConfig `mapstructure:"rabbitmq"`
-	JWT      JWTConfig      `mapstructure:"jwt"`
-	Storage  StorageConfig  `mapstructure:"storage"`
-	Log      LogConfig      `mapstructure:"log"`
+	Server        ServerConfig        `mapstructure:"server"` // `mapstructure` 标签用于Viper绑定结构体
+	MySQL         MySQLConfig         `mapstructure:"mysql"`
+	Redis         RedisConfig         `mapstructure:"redis"`
+	MinIO         MinIOConfig         `mapstructure:"minio"`
+	RabbitMQ      RabbitMQConfig      `mapstructure:"rabbitmq"`
+	JWT           JWTConfig           `mapstructure:"jwt"`
+	Storage       StorageConfig       `mapstructure:"storage"`
+	Log           LogConfig           `mapstructure:"log"`
+	Elasticsearch ElasticsearchConfig `mapstructure:"elasticsearch"`
 }
 
 // ServerConfig 服务器配置
@@ -68,6 +69,15 @@ type LogConfig struct {
 	OutputPath string `mapstructure:"output_path"`
 	ErrorPath  string `mapstructure:"error_path"`
 	Level      string `mapstructure:"level"`
+}
+
+// ElasticsearchConfig 定义 Elasticsearch 连接配置
+type ElasticsearchConfig struct {
+	Addresses []string `mapstructure:"addresses"`
+	Username  string   `mapstructure:"username"`
+	Password  string   `mapstructure:"password"`
+	// CloudID   string   `mapstructure:"cloud_id"`
+	// APIKey    string   `mapstructure:"api_key"`
 }
 
 var AppConfig *Config // 全局应用配置实例

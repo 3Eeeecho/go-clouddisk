@@ -1,14 +1,42 @@
 # filebeat.yml
 filebeat.inputs:
+  - type: filestream # 9.0.3 推荐用filestream
+    id: docker-logs
+    enabled: true
+    paths:
+      - /var/lib/docker/containers/*/*.log
+    processors:
+      - add_docker_metadata: # 自动添加 Docker 容器的元数据
+          host: "unix:///var/run/docker.sock"
+      - decode_json_fields:
+        # 第一层解析：解析Docker的原始日志行（它是一个JSON字符串）
+        fields: ["message"]
+        target: "" # 将解析出的 `log`, `stream`, `time` 提升到顶层
+        overwrite_keys: true # 覆盖原始的 `message` 字段
+
+      - decode_json_fields: # <--- 新增第二个 decode_json_fields 处理器
+        # 第二层解析：解析上一步提升到顶层的 `log` 字段
+        fields: ["log"]
+        # 将解析出的 `level`, `ts`, `caller`, `msg`, `fileID`, `userID` 等提升到顶层
+        target: ""
+        # 同样覆盖同名键。这将用解析出的 `msg` 字段覆盖 Filebeat 最终的 `message` 字段
+        overwrite_keys: true
+        add_error_key: true # 如果解析失败，添加错误字段
+        # 重命名并移动 msg 字段到 message 字段 (可选但推荐)
+      - rename: # <--- 这是一个可选的处理器，让字段名更符合习惯
+        fields:
+          - from: "msg"
+            to: "message"
+        ignore_missing: true
+        overwrite_keys: true
+
   - type: filestream
     id: go-app-logs
     enabled: true
     paths:
       - /usr/share/filebeat/logs/app.log # 这是在 Filebeat 容器内部的路径
       - /usr/share/filebeat/logs/error.log # 这是在 Filebeat 容器内部的路径
-    json.keys_under_root: true
-    json.overwrite_keys: true
-    json.add_error_key: true
+    tags: ["go-app-log"]
 
 filebeat.modules:
   - module: system
@@ -21,6 +49,10 @@ output.elasticsearch:
   hosts: ["elasticsearch:9200"] # 指向 Docker Compose 网络中的 Elasticsearch 服务名
   # username: "elastic" # 如果您的 Elasticsearch 启用了安全认证
   # password: "your_elastic_password"
+#   index: "go-clouddisk-logs-%{+yyyy.MM.dd}"
+# setup.ilm.enabled: false
+# setup.template.name: "go-clouddisk-logs" # 定义一个模板名称
+# setup.template.pattern: "go-clouddisk-logs-*" # 定义模板要匹配的索引模式
 
 setup.kibana:
   host: "kibana:5601" # 指向 Docker Compose 网络中的 Kibana 服务名

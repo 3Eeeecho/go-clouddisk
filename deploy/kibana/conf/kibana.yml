@@ -1,0 +1,11 @@
+# ./kibana/kibana.yml
+# 或者你喜欢的任何路径，比如直接在项目根目录
+# 确保这个文件是 UTF-8 编码
+
+# 服务器配置（通常已经由 Docker Compose 环境变量覆盖，但在这里设置也无妨）
+# server.host: "0.0.0.0"
+# elasticsearch.hosts: ["http://elasticsearch:9200"]
+
+# 设置 Kibana 界面语言为中文
+# 使用 zh-CN 表示简体中文
+i18n.locale: "zh-CN"

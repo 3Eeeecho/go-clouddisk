@@ -29,6 +29,7 @@ FROM alpine:latest
 # --no-cache 避免在镜像中保留 apk 缓存，减少镜像大小
 RUN apk --no-cache add ca-certificates
 ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 # 设置工作目录
 WORKDIR /app
 
