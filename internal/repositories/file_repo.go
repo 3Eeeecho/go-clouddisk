@@ -23,7 +23,9 @@ type FileRepository interface {
 	FindDeletedFilesByUserID(userID uint64) ([]models.File, error) //查找回收站中的文件
 	// 查找指定父文件夹下所有文件，包括软删除的 (用于恢复逻辑中的路径检查)
 	FindAllFilesByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error)
+	FindChildrenByPathPrefix(userID uint64, pathPrefix string) ([]models.File, error)
 
+	UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldPathPrefix, newPathPrefix string) error
 	Update(file *models.File) error
 	SoftDelete(id uint64) error      // 软删除文件
 	PermanentDelete(id uint64) error // 永久删除文件
@@ -183,4 +185,22 @@ func (r *fileRepository) FindAllFilesByUserIDAndParentFolderID(userID uint64, pa
 		return nil, err
 	}
 	return files, nil
+}
+
+// GetChildrenByPathPrefix 获取所有以给定路径前缀开头的子项 (用于更新 Path 字段)
+func (r *fileRepository) FindChildrenByPathPrefix(userID uint64, pathPrefix string) ([]models.File, error) {
+	var files []models.File
+	err := r.db.Where("user_id = ? AND path LIKE ?", userID, pathPrefix+"%").Find(&files).Error
+	if err != nil {
+		return nil, err
+	}
+	return files, nil
+}
+
+// UpdateFilesPathInBatch 批量更新文件的 Path 字段
+func (r *fileRepository) UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldPathPrefix, newPathPrefix string) error {
+	// 使用 REPLACE SQL 函数进行字符串替换
+	return tx.Model(&models.File{}).
+		Where("user_id = ? AND path LIKE ?", userID, oldPathPrefix+"%").
+		Update("path", gorm.Expr("REPLACE(path, ?, ?)", oldPathPrefix, newPathPrefix)).Error
 }

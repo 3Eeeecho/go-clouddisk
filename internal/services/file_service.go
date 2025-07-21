@@ -8,15 +8,29 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
+)
+
+// 定义更具体的错误类型
+var (
+	ErrFileNotFoundOrAccessDenied = errors.New("file or folder not found or access denied")
+	ErrParentFolderNotFound       = errors.New("target parent folder not found or is not a folder")
+	ErrCannotMoveToSelfOrSub      = errors.New("cannot move a file/folder to itself or its own subdirectory")
+	ErrNameConflict               = errors.New("a file or folder with the same name already exists in the target location")
+	ErrInvalidFileName            = errors.New("invalid file or folder name")
+	ErrDatabaseTransaction        = errors.New("database transaction failed")
+	ErrFileUnavailable            = errors.New("file or directory is not in an operable state")
+	ErrNotADirectory              = errors.New("target is not a directory")
 )
 
 type FileService interface {
@@ -29,6 +43,7 @@ type FileService interface {
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
 	RestoreFile(userID uint64, fileID uint64) error                                    // 从回收站恢复文件
 	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error) //修改文件名
+	MoveFile(userID uint64, fileID uint64, parentFolderID *uint64) error
 	// CheckFileExistenceByHash(hash string) (*models.File, error) // 根据哈希值检查文件是否存在，用于秒传
 }
 
@@ -66,9 +81,21 @@ func (s *fileService) GetFilesByUserID(userID uint64, parentFolderID *uint64) ([
 			return nil, fmt.Errorf("failed to check parent folder: %w", err)
 		}
 		// 确保父文件夹属于当前用户且确实是文件夹
-		if parentFolder.ID != userID || parentFolder.IsFolder != 1 {
-			logger.Warn("Invalid parent folder or not a folder", zap.Any("parentFolderID", parentFolderID), zap.Any("parentFolder", parentFolder))
-			return nil, errors.New("invalid parent folder or not a folder")
+		if parentFolder.UserID != userID {
+			logger.Warn("Access denied: Parent folder does not belong to user",
+				zap.Uint64("attemptedUserID", userID),
+				zap.Uint64("parentFolderID", parentFolder.ID),
+				zap.Uint64("parentFolderOwnerID", parentFolder.UserID))
+			// 返回一个更具体的错误，表明是权限问题
+			return nil, errors.New("access denied: parent folder does not belong to you")
+		}
+
+		if parentFolder.IsFolder != 1 {
+			logger.Warn("Invalid parent: Not a folder",
+				zap.Uint64("parentFolderID", parentFolder.ID),
+				zap.Uint8("isFolderValue", parentFolder.IsFolder))
+			// 返回一个更具体的错误，表明目标不是文件夹
+			return nil, errors.New("invalid parent: target ID is not a folder")
 		}
 	}
 
@@ -83,6 +110,10 @@ func (s *fileService) GetFilesByUserID(userID uint64, parentFolderID *uint64) ([
 
 func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error) {
 	logger.Debug("UploadFile called", zap.Uint64("userID", userID), zap.String("originalName", originalName), zap.Uint64("filesize", filesize), zap.Any("parentFolderID", parentFolderID))
+
+	// 用于存储父文件夹的完整路径，默认为根目录的路径 "/"
+	var parentPath string
+
 	// 1. 检查父文件夹是否存在和权限
 	if parentFolderID != nil {
 		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
@@ -94,10 +125,26 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 			logger.Error("Failed to check parent folder", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 			return nil, fmt.Errorf("failed to check parent folder: %w", err)
 		}
-		if parentFolder.UserID != userID || parentFolder.IsFolder != 1 {
-			logger.Warn("Invalid parent folder or not a folder", zap.Any("parentFolderID", parentFolderID), zap.Any("parentFolder", parentFolder))
-			return nil, errors.New("invalid parent folder or not a folder")
+		// 确保父文件夹属于当前用户且确实是文件夹
+		if parentFolder.UserID != userID {
+			logger.Warn("Access denied: Parent folder does not belong to user",
+				zap.Uint64("attemptedUserID", userID),
+				zap.Uint64("parentFolderID", parentFolder.ID),
+				zap.Uint64("parentFolderOwnerID", parentFolder.UserID))
+			// 返回一个更具体的错误，表明是权限问题
+			return nil, errors.New("access denied: parent folder does not belong to you")
 		}
+
+		if parentFolder.IsFolder != 1 {
+			logger.Warn("Invalid parent: Not a folder",
+				zap.Uint64("parentFolderID", parentFolder.ID),
+				zap.Uint8("isFolderValue", parentFolder.IsFolder))
+			// 返回一个更具体的错误，表明目标不是文件夹
+			return nil, errors.New("invalid parent: target ID is not a folder")
+		}
+		parentPath = parentFolder.Path + parentFolder.FileName + "/"
+	} else {
+		parentPath = "/"
 	}
 
 	// 2. 计算文件内容的哈希值，用于去重
@@ -134,8 +181,9 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 			UUID:           uuid.New().String(), // 每个文件记录有自己的 UUID
 			UserID:         userID,
 			ParentFolderID: parentFolderID,
-			FileName:       originalName, // 用户原始文件名
-			IsFolder:       0,            // 0表示文件
+			FileName:       originalName, // 用户原始文件名'
+			Path:           parentPath,
+			IsFolder:       0, // 0表示文件
 			Size:           existingFileByMD5.Size,
 			MimeType:       &mimeType,
 			OssBucket:      existingFileByMD5.OssBucket, // 引用现有物理文件的 bucket
@@ -165,17 +213,13 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	//提取原始拓展名
 	extension := filepath.Ext(originalName)
 
-	// 组合 OssKey：UUID + 扩展名 (为了防止重复哈希文件名的扩展名问题，使用 UUID 更稳定)
-	// 或者，你也可以使用 MD5Hash + 扩展名：storageFileName := fileMD5Hash + extension
-	// 这里我倾向于使用 UUID，因为 MD5Hash 仅仅是文件内容的哈希，而 UUID 是全局唯一标识。
-	// 但如果主要目标是秒传，那么 MD5Hash 作为文件名的一部分更直观。
-	// 考虑实际存储路径的唯一性，MD5Hash 加上原始扩展名是合理的选择。
-	storageFileName := fileMD5Hash + extension
-	ossKey := storageFileName // 将存储文件名作为 OssKey
+	// OssKey：按用户ID和文件MD5分层
+	ossKey := fmt.Sprintf("%d/%s%s", userID, fileMD5Hash, extension)
 
 	// 构造本地存储路径,使用 OssKey 作为本地文件名
-	localPath := filepath.Join(s.cfg.Storage.LocalBasePath, storageFileName)
-	logger.Info("Attempting to save physical file", zap.String("path", localPath))
+	logger.Info("show localbasepath to debug", zap.String("localBasePath", s.cfg.Storage.LocalBasePath))
+	localPath := filepath.Join(s.cfg.Storage.LocalBasePath, ossKey)
+	logger.Info("Attempting to save physical file to local disk", zap.String("path", localPath))
 
 	// 确保存储目录存在
 	err = os.MkdirAll(filepath.Dir(localPath), 0755)
@@ -207,6 +251,7 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 		UserID:         userID,
 		ParentFolderID: parentFolderID,
 		FileName:       originalName,
+		Path:           parentPath,
 		IsFolder:       0, // 0表示文件
 		Size:           uint64(writtenBytes),
 		MimeType:       &mimeType,               // 传入指针
@@ -230,6 +275,9 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 
 func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error) {
 	logger.Debug("CreateFolder called", zap.Uint64("userID", userID), zap.String("folderName", folderName), zap.Any("parentFolderID", parentFolderID))
+
+	var parentPath string // 用于存储父文件夹的完整逻辑路径，默认为根目录的路径 "/"
+
 	// 1. 检查父文件夹是否存在和权限 (与 AddFile 类似)
 	if parentFolderID != nil {
 		parentFolder, err := s.fileRepo.FindByID(*parentFolderID)
@@ -241,10 +289,26 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 			logger.Error("Failed to check parent folder", zap.Any("parentFolderID", parentFolderID), zap.Error(err))
 			return nil, fmt.Errorf("failed to check parent folder: %w", err)
 		}
-		if parentFolder.UserID != userID || parentFolder.IsFolder != 1 {
-			logger.Warn("Invalid parent folder or not a folder", zap.Any("parentFolderID", parentFolderID), zap.Any("parentFolder", parentFolder))
-			return nil, errors.New("invalid parent folder or not a folder")
+		// 确保父文件夹属于当前用户且确实是文件夹
+		if parentFolder.UserID != userID {
+			logger.Warn("Access denied: Parent folder does not belong to user",
+				zap.Uint64("attemptedUserID", userID),
+				zap.Uint64("parentFolderID", parentFolder.ID),
+				zap.Uint64("parentFolderOwnerID", parentFolder.UserID))
+			// 返回一个更具体的错误，表明是权限问题
+			return nil, errors.New("access denied: parent folder does not belong to you")
 		}
+
+		if parentFolder.IsFolder != 1 {
+			logger.Warn("Invalid parent: Not a folder",
+				zap.Uint64("parentFolderID", parentFolder.ID),
+				zap.Uint8("isFolderValue", parentFolder.IsFolder))
+			// 返回一个更具体的错误，表明目标不是文件夹
+			return nil, errors.New("invalid parent: target ID is not a folder")
+		}
+		parentPath = parentFolder.Path + parentFolder.FileName + "/"
+	} else {
+		parentPath = "/"
 	}
 
 	// 2. 检查同一父文件夹下是否已存在同名文件夹
@@ -261,6 +325,7 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 		UserID:         userID,
 		ParentFolderID: parentFolderID,
 		FileName:       folderName,
+		Path:           parentPath,
 		IsFolder:       1,   // 1 表示文件夹
 		Size:           0,   // 文件夹大小为 0
 		MimeType:       nil, // 文件夹没有 MimeType
@@ -305,16 +370,10 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 		return nil, nil, errors.New("access denied: file does not belong to user")
 	}
 
-	// 检查是否是文件 (不是文件夹)
-	if file.IsFolder == 1 {
-		logger.Warn("Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
-		return nil, nil, errors.New("cannot download a folder")
-	}
-
 	// 检查文件状态是否正常 (例如，不在回收站)
-	if file.Status != 1 {
-		logger.Warn("Attempted to download folder", zap.Uint64("folderID", file.ID), zap.String("name", file.FileName))
-		return nil, nil, errors.New("file is not available for download")
+	err = s.checkFile(file)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	// 从本地存储路径打开文件
@@ -704,6 +763,181 @@ func (s *fileService) RenameFile(userID uint64, fileID uint64, newFileName strin
 	return fileToRename, nil
 }
 
+func (s *fileService) MoveFile(userID uint64, fileID uint64, targetParentID *uint64) error {
+	// 获取要改名的文件并检查文件是否处于正常状态
+	fileToMove, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Info("MoveFile: File not found", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
+			return errors.New("file or folder not found")
+		}
+		logger.Error("MoveFile: Error retrieving file", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
+		return fmt.Errorf("failed to retrieve file: %w", err)
+	}
+
+	// 权限检查
+	if fileToMove.UserID != userID {
+		logger.Warn("MoveFile: Access denied", zap.Uint64("fileID", fileID), zap.Uint64("requesterID", userID), zap.Uint64("ownerID", fileToMove.UserID))
+		return errors.New("access denied: file or folder does not belong to user")
+	}
+
+	// 检查文件自身是否处于正常状态 (例如未被软删除或状态异常)
+	if err = s.checkFile(fileToMove); err != nil {
+		logger.Warn("MoveFile: Cannot rename a deleted or abnormal file", zap.Uint64("fileID", fileID), zap.Uint8("status", fileToMove.Status))
+		return err
+	}
+
+	// 获取目标父文件夹信息并进行权限和状态检查
+	var targetParent *models.File = &models.File{}
+
+	if targetParentID != nil {
+		// 检查目标文件夹是否是当前文件夹,如果是的话不做变动
+		if *targetParentID == fileToMove.ID {
+			logger.Info("cant move file to self or sub", zap.Uint64("file_id", fileID), zap.Uint64("parent_folder_id", *targetParentID))
+			return ErrCannotMoveToSelfOrSub
+		}
+
+		targetParent, err = s.fileRepo.FindByID(*targetParentID)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				logger.Warn("MoveFile: Target parent folder not found", zap.Uint64("targetParentID", *targetParentID), zap.Uint64("userID", userID))
+				return errors.New("target parent folder not found or is not a folder")
+			}
+			logger.Error("MoveFile: Error retrieving target parent folder",
+				zap.Uint64("targetParentID", *targetParentID), zap.Uint64("userID", userID), zap.Error(err))
+			return fmt.Errorf("failed to retrieve target parent folder: %w", err)
+		}
+
+		// 权限检查：确保目标父文件夹属于当前用户
+		if targetParent.UserID != userID {
+			logger.Warn("MoveFile: Access denied - target folder does not belong to user",
+				zap.Uint64("targetParentID", *targetParentID), zap.Uint64("requesterID", userID), zap.Uint64("ownerID", targetParent.UserID))
+			return ErrParentFolderNotFound
+		}
+
+		// 检查目标是否是有效的目录且处于正常状态
+		if err = s.checkDirectory(targetParent); err != nil {
+			logger.Warn("MoveFile: Target parent is not a valid directory or not in an operable state",
+				zap.Uint64("targetParentID", *targetParentID), zap.Error(err))
+			return err
+		}
+
+		if targetParent.IsFolder == 1 {
+			// 源路径
+			sourceFolderFullPath := fileToMove.Path + fileToMove.FileName + "/"
+
+			// 获取目标父文件夹的完整路径 (例如 "/home/user1/NewLocation/")
+			targetParentFullPath := targetParent.Path + targetParent.FileName + "/"
+
+			// 如果源文件夹的完整路径是目标父文件夹完整路径的前缀，那么就是移动到子目录
+			if strings.HasPrefix(targetParentFullPath, sourceFolderFullPath) {
+				logger.Warn("MoveFile: Cannot move folder into its own subdirectory",
+					zap.Uint64("fileID", fileID), zap.Uint64("targetParentID", *targetParentID), zap.Uint64("userID", userID))
+				return ErrCannotMoveToSelfOrSub
+			}
+		}
+	}
+
+	// 检查目标文件夹是否是当前文件夹
+	isSameDirectory := false
+	if targetParentID == nil && fileToMove.ParentFolderID == nil {
+		isSameDirectory = true
+	} else if targetParentID != nil && fileToMove.ParentFolderID != nil && *targetParentID == *fileToMove.ParentFolderID {
+		isSameDirectory = true
+	}
+
+	if isSameDirectory {
+		logger.Info("MoveFile: No change needed, already in the same directory",
+			zap.Uint64("fileID", fileID), zap.Reflect("targetParentID", targetParentID), zap.Uint64("userID", userID))
+		return nil // 成功，但未做任何更改
+	}
+
+	// 解决命名冲突问题
+	finalFileName, err := s.resolveFileNameConflict(userID, targetParentID, fileToMove.FileName, fileID, fileToMove.IsFolder)
+	if err != nil {
+		return err
+	}
+	fileToMove.FileName = finalFileName
+
+	// 开启事务
+	tx := s.db.Begin()
+	if tx.Error != nil {
+		tx.Rollback()
+		logger.Error("MoveFile: Failed to update file name in DB transaction",
+			zap.Uint64("fileID", fileToMove.ID),
+			zap.String("newName", fileToMove.FileName),
+			zap.Error(err))
+		return fmt.Errorf("failed to update file name in transaction: %w", err)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+			panic(r)
+		}
+	}()
+
+	// 更改文件本身的 ParentFolderID 和 Path
+	var newParentPath string
+	if targetParentID == nil {
+		newParentPath = "/"
+	} else {
+		newParentPath = targetParent.Path + targetParent.FileName + "/"
+	}
+
+	oldFullPathWithSelf := fileToMove.Path + fileToMove.FileName
+	newFullPathWithSelf := newParentPath + fileToMove.FileName
+
+	// 更新 fileToMove 对象的字段
+	fileToMove.ParentFolderID = targetParentID
+	fileToMove.Path = newParentPath
+
+	if err = tx.Save(fileToMove).Error; err != nil {
+		tx.Rollback()
+		logger.Error("MoveFile: Failed to update file's parent and path in DB transaction",
+			zap.Uint64("fileID", fileToMove.ID),
+			zap.String("newName", fileToMove.FileName),
+			zap.Error(err))
+		return fmt.Errorf("failed to update file name in transaction: %w", err)
+	}
+	logger.Info("MoveFile: File name updated successfully in DB transaction",
+		zap.Uint64("fileID", fileToMove.ID),
+		zap.String("newName", fileToMove.FileName))
+
+	// 如果是文件夹,递归更新所有子项的path
+	if fileToMove.IsFolder == 1 {
+		// `oldChildPathPrefix` 是指被移动文件夹在旧位置的“内部”所有文件的旧父路径前缀
+		// 例如，原文件夹是 /root/old_folder/，其内部文件 file.txt 的 Path 是 /root/old_folder/
+		// 这里的 `fileToMove.Path` 是 `/root/`，`fileToMove.FileName` 是 `old_folder`
+		oldChildPathPrefix := oldFullPathWithSelf + "/" // 完整旧文件夹的逻辑路径，例如 `/user1/documents/MyOldFolder/`
+		newChildPathPrefix := newFullPathWithSelf + "/" // 完整新文件夹的逻辑路径，例如 `/user1/archive/MyOldFolder/`
+
+		// 调用 repository 批量更新 Path
+		if err = s.fileRepo.UpdateFilesPathInBatch(
+			tx, userID, oldChildPathPrefix, newChildPathPrefix); err != nil {
+			tx.Rollback()
+			logger.Error("MoveFile: Failed to update children paths in DB transaction",
+				zap.Uint64("parentFolderID", fileToMove.ID), zap.Error(err))
+			return fmt.Errorf("%w: failed to update children paths: %w", ErrDatabaseTransaction, err)
+		}
+	}
+
+	err = tx.Commit().Error
+	if err != nil {
+		logger.Error("MoveFile: Failed to commit transaction", zap.Error(err))
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	logger.Info("MoveFile: File/Folder moved successfully",
+		zap.Uint64("fileID", fileID),
+		zap.Reflect("targetParentID", targetParentID),
+		zap.String("fileName", fileToMove.FileName),
+		zap.String("oldPath", oldFullPathWithSelf), // 记录旧的完整路径
+		zap.String("newPath", newFullPathWithSelf), // 记录新的完整路径
+		zap.Uint64("userID", userID))
+
+	return nil
+}
+
 // ---helpers---
 // collectFilesForDeletion 辅助函数：收集需要删除的文件和文件夹（包括其所有子项）
 // 这里使用 BFS (广度优先搜索) 遍历，避免深层递归导致的栈溢出
@@ -812,4 +1046,38 @@ func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uin
 	}
 	logger.Debug("resolveFileNameConflict finished", zap.String("finalName", proposedFileName))
 	return proposedFileName, nil
+}
+
+// 检查目标文件是否处于正常的可操作状态
+func (s *fileService) checkFile(fileToCheck *models.File) error {
+	if fileToCheck == nil {
+		return xerr.ErrFileNotFound
+	}
+
+	var existingFile models.File
+	if err := s.db.Where("id = ?", fileToCheck.ID).First(&existingFile).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			logger.Warn("file not exist", zap.Uint64("file_id", fileToCheck.ID))
+			return fmt.Errorf("%w: ID %d", xerr.ErrFileNotFound, fileToCheck.ID) // 使用 errors.Wrap
+		}
+		return fmt.Errorf("database query error for file %d: %w", fileToCheck.ID, err)
+	}
+
+	if fileToCheck.DeletedAt.Valid {
+		return fmt.Errorf("%w: file %d is deleted", xerr.ErrFileUnavailable, fileToCheck.ID)
+	}
+
+	return nil
+}
+
+// CheckDirectory 是一个辅助函数，用于检查一个文件是否是有效的目录
+func (s *fileService) checkDirectory(dirToCheck *models.File) error {
+	if err := s.checkFile(dirToCheck); err != nil {
+		return err // 如果文件本身不可用，直接返回
+	}
+	// 根据你的 models.File.IsFolder 定义：1 为文件夹
+	if dirToCheck.IsFolder == 0 { // Changed from !dirToCheck.IsFolder to dirToCheck.IsFolder == 0
+		return fmt.Errorf("file %d is not a directory", dirToCheck.ID)
+	}
+	return nil
 }

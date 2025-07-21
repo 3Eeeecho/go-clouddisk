@@ -151,6 +151,7 @@ func UploadFile(fileService services.FileService, cfg *config.Config) gin.Handle
 			"id":               uploadedFile.ID,
 			"uuid":             uploadedFile.UUID,
 			"filename":         uploadedFile.FileName, // 使用 FileName
+			"path":             uploadedFile.Path,
 			"is_folder":        uploadedFile.IsFolder,
 			"size":             uploadedFile.Size,
 			"mime_type":        uploadedFile.MimeType,
@@ -202,6 +203,7 @@ func CreateFolder(fileService services.FileService, cfg *config.Config) gin.Hand
 			"id":               folder.ID,
 			"uuid":             folder.UUID,
 			"folder_name":      folder.FileName,
+			"path":             folder.Path,
 			"parent_folder_id": folder.ParentFolderID,
 			"is_folder":        folder.IsFolder,
 			"created_at":       folder.CreatedAt,

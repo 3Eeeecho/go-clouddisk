@@ -16,7 +16,7 @@ type Config struct {
 	MinIO         MinIOConfig         `mapstructure:"minio"`
 	RabbitMQ      RabbitMQConfig      `mapstructure:"rabbitmq"`
 	JWT           JWTConfig           `mapstructure:"jwt"`
-	Storage       StorageConfig       `mapstructure:"storage"`
+	Storage       StorageConfig       `mapstructure:"storageconfig"`
 	Log           LogConfig           `mapstructure:"log"`
 	Elasticsearch ElasticsearchConfig `mapstructure:"elasticsearch"`
 }

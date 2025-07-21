@@ -13,6 +13,7 @@ type File struct {
 	UserID         uint64         `gorm:"not null" json:"user_id"`
 	ParentFolderID *uint64        `gorm:"default:null" json:"parent_folder_id"` // 父文件夹ID，根目录为 null
 	FileName       string         `gorm:"type:varchar(255);not null" json:"filename"`
+	Path           string         `gorm:"type:varchar(1024);not null;default:''" json:"path"`        // 逻辑路径
 	IsFolder       uint8          `gorm:"type:tinyint unsigned;not null;default:0" json:"is_folder"` // 1:文件夹, 0:文件
 	Size           uint64         `gorm:"type:bigint unsigned;not null;default:0" json:"size"`
 	MimeType       *string        `gorm:"type:varchar(128);default:null" json:"mime_type"`
