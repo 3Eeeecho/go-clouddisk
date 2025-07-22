@@ -82,6 +82,7 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 			fileGroup.GET("/recyclebin", handlers.ListRecycleBinFiles(fileService))
 			fileGroup.PUT("/restore/:file_id", handlers.RestoreFile(fileService))
 			fileGroup.PUT("/rename/:id", handlers.RenameFile(fileService))
+			fileGroup.PUT("/move", handlers.MoveFile(fileService))
 		}
 	}
 

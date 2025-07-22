@@ -27,6 +27,7 @@ jwt:
 
 storageconfig:
   local_base_path: "./uploads/data"
+  type: "local"
 
 log:
   output_path: "logs/app.log"

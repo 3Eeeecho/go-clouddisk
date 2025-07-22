@@ -62,6 +62,7 @@ type JWTConfig struct {
 
 type StorageConfig struct {
 	LocalBasePath string `mapstructure:"local_base_path"`
+	Type          string `mapstructure:"type"`
 }
 
 // zap日志配置

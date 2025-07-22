@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -17,16 +18,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
-
-type CreateFolderRequest struct {
-	FolderName     string  `json:"folder_name" binding:"required"`
-	ParentFolderID *uint64 `json:"parent_folder_id"` // 可选，根目录为 null
-}
-
-// 定义 RenameFileRequest 结构体
-type RenameFileRequest struct {
-	NewFileName string `json:"new_file_name" binding:"required"`
-}
 
 // @Summary 获取用户文件列表
 // @Description 获取当前用户指定文件夹下的文件和文件夹列表
@@ -163,6 +154,11 @@ func UploadFile(fileService services.FileService, cfg *config.Config) gin.Handle
 	}
 }
 
+type CreateFolderRequest struct {
+	FolderName     string  `json:"folder_name" binding:"required"`
+	ParentFolderID *uint64 `json:"parent_folder_id"` // 可选，根目录为 null
+}
+
 // @Summary 创建文件夹
 // @Description 在指定目录下创建文件夹
 // @Tags 文件
@@ -260,27 +256,51 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 		// http.ServeContent 最好接收一个 io.ReadSeeker 接口
 		var seekableReader io.ReadSeeker
 		var lastModified time.Time
+		var fileSize int64
+
 		if osFile, ok := fileReader.(*os.File); ok {
 			fileInfo, statErr := osFile.Stat()
 			if statErr == nil {
 				seekableReader = osFile
 				lastModified = fileInfo.ModTime()
+				fileSize = fileInfo.Size()
 			} else {
 				// 如果 Stat 失败，仍然可以使用普通的 io.Reader，但 ServeContent 功能会受限
 				// 对于这种情况，http.ServeContent 内部会进行 io.Copy
 				seekableReader = fileReader.(io.ReadSeeker) // 这里强制转换，因为它必须是 ReadSeeker
 				lastModified = fileModel.UpdatedAt          // 使用数据库中的更新时间作为 Last-Modified
+				fileSize = int64(fileModel.Size)
 			}
 		} else {
 			// 如果不是 *os.File，则假设它已经是 io.ReadSeeker 并且没有更具体的 FileInfo
 			seekableReader = fileReader.(io.ReadSeeker)
 			lastModified = fileModel.UpdatedAt
+			fileSize = int64(fileModel.Size)
 		}
 
 		// 设置文件名
 		fileName := fileModel.FileName
 
 		// 使用 http.ServeContent 进行下载
+		// 强制设置Content-Type,ServeContent有时会错误处理,无法正确嗅探或推断出其正确的 MIME 类型
+		if fileModel.MimeType == nil || *fileModel.MimeType == "" {
+			// 如果 MIME 类型为空，尝试根据文件名推断一个默认的，避免空值导致错误
+			c.Writer.Header().Set("Content-Type", "application/octet-stream")
+		} else {
+			c.Writer.Header().Set("Content-Type", *fileModel.MimeType)
+		}
+
+		encodedFileName := url.PathEscape(fileName)
+		c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=%s''%s`,
+			encodedFileName,
+			"UTF-8",         // 编码方式
+			encodedFileName, // 编码后的文件名
+		))
+
+		if fileSize > 0 { // 假设 fileSize 已正确获取
+			c.Writer.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
+		}
+
 		// ServeContent 会自动处理 Content-Length, Content-Type, Content-Disposition, Range 请求等
 		http.ServeContent(c.Writer, c.Request, fileName, lastModified, seekableReader)
 	}
@@ -430,6 +450,11 @@ func RestoreFile(fileService services.FileService) gin.HandlerFunc {
 	}
 }
 
+// 定义 RenameFileRequest 结构体
+type RenameFileRequest struct {
+	NewFileName string `json:"new_file_name" binding:"required"`
+}
+
 // RenameFile 处理文件/文件夹的改名请求
 // PUT /api/v1/files/rename/:id
 func RenameFile(fileService services.FileService) gin.HandlerFunc {
@@ -486,6 +511,89 @@ func RenameFile(fileService services.FileService) gin.HandlerFunc {
 
 		xerr.Success(c, http.StatusOK, "File/folder renamed successfully", gin.H{
 			"file_info": renamedFile,
+		})
+	}
+}
+
+// MoveFileRequest 移动文件的请求体
+type MoveFileRequest struct {
+	FileID               uint64  `json:"file_id" binding:"required"` // 要移动的文件或文件夹的ID
+	TargetParentFolderID *uint64 `json:"target_parent_folder_id"`    // 目标父文件夹的ID，nil表示移动到根目录
+}
+
+// @Summary 移动文件/文件夹
+// @Description 移动指定文件或文件夹到新的父文件夹下
+// @Tags 文件
+// @Accept json
+// @Produce json
+// @Param request body MoveFileRequest true "移动文件请求体"
+// @Success 200 {object} models.File "成功移动后的文件/文件夹信息"
+// @Failure 400 {object} map[string]interface{} "参数错误，例如文件ID或目标父文件夹ID无效，或目标不是文件夹"
+// @Failure 403 {object} map[string]interface{} "权限不足，例如文件不属于当前用户，或无权访问目标文件夹"
+// @Failure 404 {object} map[string]interface{} "文件或目标文件夹未找到"
+// @Failure 409 {object} map[string]interface{} "目标位置已存在同名文件/文件夹"
+// @Failure 500 {object} map[string]interface{} "内部服务器错误"
+// @Router /api/v1/files/move [post]
+func MoveFile(fileService services.FileService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var req MoveFileRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			logger.Error("MoveFile: Invalid request body", zap.Error(err))
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid request body format")
+			return
+		}
+
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			// GetUserIDFromContext 应该会返回一个错误响应，这里只是双重检查
+			return
+		}
+
+		logger.Debug("MoveFile: attempting to move file",
+			zap.Uint64("userID", currentUserID),
+			zap.Uint64("fileID", req.FileID),
+			zap.Any("targetParentFolderID", req.TargetParentFolderID))
+
+		// 调用 Service 层进行文件移动操作
+		movedFile, err := fileService.MoveFile(currentUserID, req.FileID, req.TargetParentFolderID)
+		if err != nil {
+			logger.Error("MoveFile: Service call failed",
+				zap.Uint64("userID", currentUserID),
+				zap.Uint64("fileID", req.FileID),
+				zap.Any("targetParentFolderID", req.TargetParentFolderID),
+				zap.Error(err))
+
+			// 根据 service 层返回的错误类型，返回不同的 HTTP 状态码
+			switch err.Error() {
+			case "file not found":
+				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, "File or folder to move not found")
+			case "target folder not found":
+				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, "Target parent folder not found")
+			case "access denied: file does not belong to you":
+				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, "Access denied: file/folder does not belong to you")
+			case "access denied: target folder does not belong to you": // 或者更通用的权限不足
+				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, "Access denied: target folder is not accessible")
+			case "cannot move root directory":
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Cannot move root directory")
+			case "cannot move folder into its own subtree":
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Cannot move folder into its own subdirectory")
+			case "target is not a folder":
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Target ID is not a folder")
+			case "name conflict: file or folder with the same name already exists in target location":
+				xerr.Error(c, http.StatusConflict, xerr.CodeConflict, "Name conflict: an item with the same name already exists in the target location")
+			default:
+				xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to move file/folder: %v", err))
+			}
+			return
+		}
+
+		logger.Info("MoveFile: File/folder moved successfully",
+			zap.Uint64("userID", currentUserID),
+			zap.Uint64("movedFileID", movedFile.ID),
+			zap.String("newPath", movedFile.Path+movedFile.FileName)) // 记录新路径
+
+		xerr.Success(c, http.StatusOK, "File/folder moved successfully", gin.H{
+			"file_info": movedFile,
 		})
 	}
 }
