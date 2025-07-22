@@ -34,14 +34,17 @@ func main() {
 	// client := database.InitRedis(&config.AppConfig.Redis)
 	// defer database.CloseRedis(client)
 
-	//
-
 	// 初始化 MinIO 客户端
-	// minioClient := database.InitMinIO(&config.AppConfig.MinIO)
+	if cfg.Storage.Type == "minio" {
+		err = database.InitMinioClient(&config.AppConfig.MinIO)
+		if err != nil {
+			logger.Fatal("Failed to initialize MinIO client", zap.Error(err))
+		}
+	}
 
 	// 初始化Elasticsearch
-	// database.InitElasticsearchClient(&cfg.Elasticsearch)
-	// logger.Info("Elasticsearch client initialized.")
+	database.InitElasticsearchClient(&cfg.Elasticsearch)
+	logger.Info("Elasticsearch client initialized.")
 
 	// 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig

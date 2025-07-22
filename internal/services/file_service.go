@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"crypto/md5"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,8 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -35,16 +38,42 @@ type FileService interface {
 }
 
 type fileService struct {
-	fileRepo repositories.FileRepository
-	userRepo repositories.UserRepository
-	cfg      *config.Config
-	db       *gorm.DB
+	fileRepo    repositories.FileRepository
+	userRepo    repositories.UserRepository
+	cfg         *config.Config
+	db          *gorm.DB
+	minioClient *minio.Client
 }
 
 var _ FileService = (*fileService)(nil)
 
 // NewFileService 创建一个新的文件服务实例
 func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB) FileService {
+	var minioClient *minio.Client
+	var err error
+	if cfg.Storage.Type == "minio" {
+		minioClient, err = minio.New(cfg.MinIO.Endpoint, &minio.Options{
+			Creds:  credentials.NewStaticV4(cfg.MinIO.AccessKeyID, cfg.MinIO.SecretAccessKey, ""),
+			Secure: cfg.MinIO.UseSSL,
+		})
+		if err != nil {
+			logger.Fatal("Failed to initialize MinIO client", zap.Error(err))
+		}
+		// 检查桶是否存在，不存在则创建
+		exists, errBucketExists := minioClient.BucketExists(context.Background(), cfg.MinIO.BucketName)
+		if errBucketExists == nil && !exists {
+			logger.Info("MinIO bucket does not exist, creating...", zap.String("bucketName", cfg.MinIO.BucketName))
+			err = minioClient.MakeBucket(context.Background(), cfg.MinIO.BucketName, minio.MakeBucketOptions{})
+			if err != nil {
+				logger.Fatal("Failed to create MinIO bucket", zap.String("bucketName", cfg.MinIO.BucketName), zap.Error(err))
+			}
+			logger.Info("MinIO bucket created successfully", zap.String("bucketName", cfg.MinIO.BucketName))
+		} else if errBucketExists != nil {
+			logger.Fatal("Failed to check MinIO bucket existence", zap.Error(errBucketExists))
+		}
+		logger.Info("MinIO client initialized successfully", zap.String("endpoint", cfg.MinIO.Endpoint))
+	}
+
 	return &fileService{
 		fileRepo: fileRepo,
 		userRepo: userRepo,

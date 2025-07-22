@@ -49,10 +49,9 @@ output.elasticsearch:
   hosts: ["elasticsearch:9200"] # 指向 Docker Compose 网络中的 Elasticsearch 服务名
   # username: "elastic" # 如果您的 Elasticsearch 启用了安全认证
   # password: "your_elastic_password"
-#   index: "go-clouddisk-logs-%{+yyyy.MM.dd}"
-# setup.ilm.enabled: false
-# setup.template.name: "go-clouddisk-logs" # 定义一个模板名称
-# setup.template.pattern: "go-clouddisk-logs-*" # 定义模板要匹配的索引模式
+  index: "go-clouddisk-logs-%{+yyyy.MM.dd}"
+setup.template.name: "go-clouddisk-logs"
+setup.template.pattern: "go-clouddisk-logs-*"
 
 setup.kibana:
   host: "kibana:5601" # 指向 Docker Compose 网络中的 Kibana 服务名
