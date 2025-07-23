@@ -71,7 +71,7 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 
 			fileRepo := repositories.NewFileRepository(database.DB)
 			userRepo := repositories.NewUserRepository(database.DB)
-			fileService := services.NewFileService(fileRepo, userRepo, cfg, database.DB)
+			fileService := services.NewFileService(fileRepo, userRepo, cfg, database.DB, database.MinioClientGlobal)
 			// 传递 fileService而不是db
 			fileGroup.GET("/", handlers.ListUserFiles(fileService, cfg))
 			fileGroup.POST("/upload", handlers.UploadFile(fileService, cfg))

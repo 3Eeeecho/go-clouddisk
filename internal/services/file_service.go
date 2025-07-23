@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,7 +20,6 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -48,37 +48,13 @@ type fileService struct {
 var _ FileService = (*fileService)(nil)
 
 // NewFileService 创建一个新的文件服务实例
-func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB) FileService {
-	var minioClient *minio.Client
-	var err error
-	if cfg.Storage.Type == "minio" {
-		minioClient, err = minio.New(cfg.MinIO.Endpoint, &minio.Options{
-			Creds:  credentials.NewStaticV4(cfg.MinIO.AccessKeyID, cfg.MinIO.SecretAccessKey, ""),
-			Secure: cfg.MinIO.UseSSL,
-		})
-		if err != nil {
-			logger.Fatal("Failed to initialize MinIO client", zap.Error(err))
-		}
-		// 检查桶是否存在，不存在则创建
-		exists, errBucketExists := minioClient.BucketExists(context.Background(), cfg.MinIO.BucketName)
-		if errBucketExists == nil && !exists {
-			logger.Info("MinIO bucket does not exist, creating...", zap.String("bucketName", cfg.MinIO.BucketName))
-			err = minioClient.MakeBucket(context.Background(), cfg.MinIO.BucketName, minio.MakeBucketOptions{})
-			if err != nil {
-				logger.Fatal("Failed to create MinIO bucket", zap.String("bucketName", cfg.MinIO.BucketName), zap.Error(err))
-			}
-			logger.Info("MinIO bucket created successfully", zap.String("bucketName", cfg.MinIO.BucketName))
-		} else if errBucketExists != nil {
-			logger.Fatal("Failed to check MinIO bucket existence", zap.Error(errBucketExists))
-		}
-		logger.Info("MinIO client initialized successfully", zap.String("endpoint", cfg.MinIO.Endpoint))
-	}
-
+func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB, minioClient *minio.Client) FileService {
 	return &fileService{
-		fileRepo: fileRepo,
-		userRepo: userRepo,
-		cfg:      cfg,
-		db:       db,
+		fileRepo:    fileRepo,
+		userRepo:    userRepo,
+		cfg:         cfg,
+		db:          db,
+		minioClient: minioClient,
 	}
 }
 
@@ -179,52 +155,87 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 	// 4. 文件内容不存在，需要上传到物理存储 (MinIO/S3 或本地)
 	logger.Info("Uploading new file to storage", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
 	// 生成新的 UUID 作为文件在OSS中的唯一标识
-	newUUID := uuid.New().String()
+	// newUUID := uuid.New().String()
 
 	//提取原始拓展名
 	extension := filepath.Ext(originalName)
 
-	// OssKey：按用户ID和文件MD5分层
-	ossKey := fmt.Sprintf("%d/%s%s", userID, fileMD5Hash, extension)
+	// OssKey：文件MD5分层
+	ossKey := fmt.Sprintf("%d:%s%s", userID, fileMD5Hash, extension)
 
-	// 构造本地存储路径,使用 OssKey 作为本地文件名
-	logger.Info("show localbasepath to debug", zap.String("localBasePath", s.cfg.Storage.LocalBasePath))
-	localPath := filepath.Join(s.cfg.Storage.LocalBasePath, ossKey)
-	logger.Info("Attempting to save physical file to local disk", zap.String("path", localPath))
+	var uploadedSize int64
+	switch s.cfg.Storage.Type {
+	case "minio":
+		// 上传到 MinIO
+		logger.Info("Attempting to save physical file to MinIO",
+			zap.String("bucket", s.cfg.MinIO.BucketName),
+			zap.String("ossKey", ossKey))
 
-	// 确保存储目录存在
-	err = os.MkdirAll(filepath.Dir(localPath), 0755)
-	if err != nil {
-		logger.Error("Failed to create storage directory", zap.String("path", localPath), zap.Error(err))
-		return nil, fmt.Errorf("failed to create storage directory: %w", err)
-	}
+		info, err := s.minioClient.PutObject(context.Background(),
+			s.cfg.MinIO.BucketName,
+			ossKey,
+			fileContent,
+			int64(filesize),
+			minio.PutObjectOptions{
+				ContentType: mimeType,
+				UserMetadata: map[string]string{
+					"originalFileName": originalName,
+					"userID":           strconv.FormatUint(userID, 10),
+				},
+			})
 
-	out, err := os.Create(localPath)
-	if err != nil {
-		logger.Error("Failed to create file on disk", zap.String("path", localPath), zap.Error(err))
-		return nil, fmt.Errorf("failed to create file on disk at %s: %w", localPath, err)
-	}
-	defer out.Close()
+		if err != nil {
+			logger.Error("Failed to upload file to MinIO",
+				zap.String("ossKey", ossKey), zap.Error(err))
+			return nil, fmt.Errorf("failed to upload file to cloud storage: %w", err)
+		}
+		uploadedSize = info.Size
+		logger.Info("File uploaded to MinIO successfully",
+			zap.String("ossKey", ossKey), zap.Int64("size", uploadedSize))
+	case "local":
+		// 构造本地存储路径,使用 OssKey 作为本地文件名
+		logger.Info("show localbasepath to debug", zap.String("localBasePath", s.cfg.Storage.LocalBasePath))
+		localPath := filepath.Join(s.cfg.Storage.LocalBasePath, ossKey)
+		logger.Info("Attempting to save physical file to local disk", zap.String("path", localPath))
 
-	// 从 fileContent 读取并写入到物理文件
-	writtenBytes, err := io.Copy(out, fileContent)
-	logger.Info("Physical file written successfully", zap.String("path", localPath), zap.Int64("writtenBytes", writtenBytes))
-	if err != nil {
-		logger.Error("Failed to write file to disk", zap.String("path", localPath), zap.Error(err))
-		os.Remove(localPath) // 写入失败，删除不完整文件
-		return nil, fmt.Errorf("failed to write file to disk: %w", err)
+		// 确保存储目录存在
+		err = os.MkdirAll(filepath.Dir(localPath), 0755)
+		if err != nil {
+			logger.Error("Failed to create storage directory", zap.String("path", localPath), zap.Error(err))
+			return nil, fmt.Errorf("failed to create storage directory: %w", err)
+		}
+
+		out, err := os.Create(localPath)
+		if err != nil {
+			logger.Error("Failed to create file on disk", zap.String("path", localPath), zap.Error(err))
+			return nil, fmt.Errorf("failed to create file on disk at %s: %w", localPath, err)
+		}
+		defer out.Close()
+
+		// 从 fileContent 读取并写入到物理文件
+		writtenBytes, err := io.Copy(out, fileContent)
+		logger.Info("Physical file written successfully", zap.String("path", localPath), zap.Int64("writtenBytes", writtenBytes))
+		if err != nil {
+			logger.Error("Failed to write file to disk", zap.String("path", localPath), zap.Error(err))
+			os.Remove(localPath) // 写入失败，删除不完整文件
+			return nil, fmt.Errorf("failed to write file to disk: %w", err)
+		}
+		uploadedSize = writtenBytes
+		logger.Info("Physical file written successfully to local disk", zap.String("path", localPath), zap.Int64("writtenBytes", uploadedSize))
+	default:
+		return nil, errors.New("unsupported storage type configured for upload")
 	}
 
 	// 5. 将文件元数据记录到数据库
 	logger.Debug("Saving file record to database", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
 	fileRecord := &models.File{
-		UUID:           newUUID,
+		UUID:           uuid.New().String(),
 		UserID:         userID,
 		ParentFolderID: parentFolderID,
 		FileName:       originalName,
 		Path:           parentPath,
 		IsFolder:       0, // 0表示文件
-		Size:           uint64(writtenBytes),
+		Size:           uint64(uploadedSize),
 		MimeType:       &mimeType,               // 传入指针
 		OssBucket:      &s.cfg.MinIO.BucketName, // 假设使用 MinIO 的 bucket name，即使是本地存储
 		OssKey:         &ossKey,                 // 传入指针
@@ -236,11 +247,28 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 
 	if err := s.fileRepo.Create(fileRecord); err != nil {
 		logger.Error("Failed to save file record to database", zap.String("file", originalName), zap.Error(err))
-		os.Remove(localPath) // 如果数据库记录失败，删除已经写入的物理文件
+		switch s.cfg.Storage.Type {
+		case "minio":
+			removeErr := s.minioClient.RemoveObject(context.Background(), s.cfg.MinIO.BucketName, ossKey, minio.RemoveObjectOptions{})
+			if removeErr != nil {
+				logger.Error("Failed to remove MinIO object after DB save failure",
+					zap.String("ossKey", ossKey), zap.Error(removeErr))
+			} else {
+				logger.Info("Successfully removed MinIO object after DB save failure", zap.String("ossKey", ossKey))
+			}
+		case "local":
+			// 如果数据库记录失败，删除已经写入的物理文件
+			os.Remove(filepath.Join(s.cfg.Storage.LocalBasePath, ossKey))
+		}
 		return nil, fmt.Errorf("failed to save file record to database: %w", err)
 	}
 
-	logger.Info("UploadFile success", zap.String("file", originalName), zap.Uint64("userID", userID), zap.String("md5", fileMD5Hash))
+	logger.Info("UploadFile success",
+		zap.String("file", originalName),
+		zap.Uint64("userID", userID),
+		zap.String("md5", fileMD5Hash),
+		zap.String("storageType", s.cfg.Storage.Type),
+		zap.Stringp("ossKey", fileRecord.OssKey))
 	return fileRecord, nil
 }
 
@@ -315,12 +343,6 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 		return nil, nil, fmt.Errorf("failed to retrieve file from DB: %w", err)
 	}
 
-	// 权限检查：确保文件属于当前用户
-	if file.UserID != userID {
-		logger.Warn("Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
-		return nil, nil, errors.New("access denied: file does not belong to user")
-	}
-
 	if file.IsFolder == 1 { // 假设 IsFolder 为 1 表示是文件夹
 		logger.Warn("Attempted to download a folder", zap.Uint64("folderID", fileID))
 		// 显式返回一个错误，说明不能下载文件夹
@@ -328,9 +350,15 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 	}
 
 	// 检查文件状态是否正常 (例如，不在回收站)
-	err = s.checkFile(file)
+	err = s.checkFile(file, userID)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// 检查 OssKey 是否存在
+	if file.OssKey == nil || *file.OssKey == "" {
+		logger.Error("File record has no OssKey, cannot retrieve physical file", zap.Uint64("fileID", file.ID))
+		return nil, nil, errors.New("file data unavailable (missing OssKey)")
 	}
 
 	var fileReader io.ReadSeekCloser
@@ -352,16 +380,31 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 		}
 		logger.Info("Physical file opened successfully. Returning file and reader.", zap.String("path", localFilePath))
 	case "minio":
-		// TODO: 这里实现 MinIO 的下载逻辑
-		// 示例：
-		// obj, err := s.minioClient.GetObject(context.Background(), s.cfg.Minio.BucketName, *file.OssKey, minio.GetObjectOptions{})
-		// if err != nil {
-		//     logger.Error("Failed to get object from MinIO", zap.String("key", *file.OssKey), zap.Error(err))
-		//     return nil, nil, fmt.Errorf("failed to get file from cloud storage: %w", err)
-		// }
-		// fileReader = obj // MinIO GetObject 返回的是 io.ReadCloser，可能需要包装成 io.ReadSeekCloser
-		// logger.Info("Getting object from MinIO for download", zap.String("key", *file.OssKey))
-		return nil, nil, errors.New("minio download not implemented yet") // 暂时返回未实现
+		// 实现 MinIO 的下载逻辑
+		bucketName := s.cfg.MinIO.BucketName
+		if file.OssBucket != nil && *file.OssBucket != "" {
+			bucketName = *file.OssBucket
+		}
+
+		logger.Info("Attempting to get object from MinIO for download",
+			zap.String("bucket", bucketName),
+			zap.String("ossKey", *file.OssKey))
+
+		fileReader, err = s.minioClient.GetObject(context.Background(), bucketName, *file.OssKey, minio.GetObjectOptions{})
+		if err != nil {
+			// 检查是否是对象不存在的错误
+			if strings.Contains(err.Error(), "The specified key does not exist") || strings.Contains(err.Error(), "NoSuchKey") {
+				logger.Warn("Physical file not found in MinIO for DB record ID",
+					zap.Uint64("fileID", file.ID), zap.String("ossKey", *file.OssKey), zap.Error(err))
+				return nil, nil, errors.New("physical file not found in cloud storage")
+			}
+
+			logger.Error("Failed to get object from MinIO for download",
+				zap.String("ossKey", *file.OssKey), zap.Error(err))
+			return nil, nil, fmt.Errorf("failed to get file from cloud storage: %w", err)
+		}
+		logger.Info("Object retrieved successfully from MinIO. Returning file and reader.",
+			zap.String("bucket", bucketName), zap.String("ossKey", *file.OssKey))
 	default:
 		return nil, nil, errors.New("unsupported storage type configured")
 	}
@@ -504,17 +547,65 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 		}
 
 		//如果是文件且有 OssKey (即有对应的物理文件)，则删除物理文件
-		if fileToPermanentlyDelete.IsFolder == 0 && fileToPermanentlyDelete.OssKey != nil && *fileToPermanentlyDelete.OssKey != "" {
+		if fileToPermanentlyDelete.IsFolder == 0 && fileToPermanentlyDelete.OssKey != nil && *fileToPermanentlyDelete.OssKey != "" && fileToPermanentlyDelete.MD5Hash != nil && *fileToPermanentlyDelete.MD5Hash != "" {
 			localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *fileToPermanentlyDelete.OssKey)
-			err = os.Remove(localFilePath)
-			if err != nil {
+			referencesCount, countErr := s.fileRepo.CountFilesInStorage(*fileToPermanentlyDelete.OssKey, *fileToPermanentlyDelete.MD5Hash, fileToPermanentlyDelete.ID)
+			if countErr != nil {
 				tx.Rollback()
-				logger.Error("PermanentDeleteFile: Failed to delete physical file", zap.String("path", localFilePath), zap.Uint64("recordID", fileID), zap.Error(err))
-				return fmt.Errorf("failed to delete physical file: %w", err)
+				return fmt.Errorf("failed to check file references before deleting physical file: %w", countErr)
 			}
-			logger.Info("PermanentDeleteFile: Physical file deleted.", zap.String("path", localFilePath))
+			if referencesCount == 0 {
+				// 没有其他文件记录引用这个物理文件了，可以安全删除物理文件
+				logger.Info("PermanentDeleteFile: No other references to physical file, proceeding with physical deletion.",
+					zap.String("ossKey", *fileToPermanentlyDelete.OssKey),
+					zap.Uint64("fileID", fileToPermanentlyDelete.ID))
+				switch s.cfg.Storage.Type {
+				case "local":
+					err = os.Remove(localFilePath)
+					if err != nil {
+						tx.Rollback()
+						logger.Error("PermanentDeleteFile: Failed to delete physical file", zap.String("path", localFilePath), zap.Uint64("recordID", fileID), zap.Error(err))
+						return fmt.Errorf("failed to delete physical file: %w", err)
+					}
+					logger.Info("PermanentDeleteFile: Physical file deleted.", zap.String("path", localFilePath))
+				case "minio":
+					bucketName := s.cfg.MinIO.BucketName
+					if fileToPermanentlyDelete.OssBucket != nil && *fileToPermanentlyDelete.OssBucket != "" {
+						bucketName = *fileToPermanentlyDelete.OssBucket
+					}
+					logger.Info("PermanentDeleteFile: Attempting to delete object from MinIO",
+						zap.String("bucket", bucketName),
+						zap.String("ossKey", *fileToPermanentlyDelete.OssKey),
+						zap.Uint64("recordID", fileToPermanentlyDelete.ID))
+					err = s.minioClient.RemoveObject(context.Background(), bucketName, *fileToPermanentlyDelete.OssKey, minio.RemoveObjectOptions{})
+					if err != nil {
+						tx.Rollback()
+						logger.Error("PermanentDeleteFile: Failed to delete object from MinIO",
+							zap.String("bucket", bucketName),
+							zap.String("ossKey", *fileToPermanentlyDelete.OssKey),
+							zap.Uint64("recordID", fileToPermanentlyDelete.ID),
+							zap.Error(err))
+						return fmt.Errorf("failed to delete object from cloud storage: %w", err)
+					}
+					logger.Info("PermanentDeleteFile: Object deleted from MinIO.",
+						zap.String("bucket", bucketName),
+						zap.String("ossKey", *fileToPermanentlyDelete.OssKey),
+						zap.Uint64("recordID", fileToPermanentlyDelete.ID))
+				default:
+					tx.Rollback()
+					return errors.New("unsupported storage type configured for permanent deletion")
+				}
+			} else {
+				// 存在其他用户的文件引用,就不删除物理文件
+				logger.Info("PermanentDeleteFile: Physical file has other references, skipping physical deletion.",
+					zap.String("ossKey", *fileToPermanentlyDelete.OssKey),
+					zap.Uint64("fileID", fileToPermanentlyDelete.ID),
+					zap.Int64("referencesCount", referencesCount))
+			}
 		}
 
+		// 无论是否删除物理文件，都删除数据库记录
+		// 使用 Unscoped() 绕过 GORM 的软删除，执行真正的 DELETE
 		err = tx.Unscoped().Delete(&models.File{}, fileToPermanentlyDelete.ID).Error
 		if err != nil {
 			tx.Rollback()
@@ -654,7 +745,7 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 }
 
 func (s *fileService) RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error) {
-	// 1. 获取要改名的文件
+	// 获取要改名的文件
 	fileToRename, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -665,25 +756,18 @@ func (s *fileService) RenameFile(userID uint64, fileID uint64, newFileName strin
 		return nil, fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
-	// 2. 权限检查
-	if fileToRename.UserID != userID {
-		logger.Warn("RenameFile: Access denied", zap.Uint64("fileID", fileID), zap.Uint64("requesterID", userID), zap.Uint64("ownerID", fileToRename.UserID))
-		return nil, errors.New("access denied: file or folder does not belong to user")
+	// 检查文件是否处于正常状态
+	if err = s.checkFile(fileToRename, userID); err != nil {
+		return nil, err
 	}
 
-	// 3. 检查文件是否处于正常状态 (未被软删除)
-	if fileToRename.Status != 1 || fileToRename.DeletedAt.Valid { // DeletedAt.Valid 表示它被软删除了
-		logger.Warn("RenameFile: Cannot rename a deleted or abnormal file", zap.Uint64("fileID", fileID), zap.Uint8("status", fileToRename.Status))
-		return nil, errors.New("cannot rename a deleted or abnormal file/folder")
-	}
-
-	// 4. 如果新旧文件名相同，直接返回，不做任何操作
+	// 如果新旧文件名相同，直接返回，不做任何操作
 	if fileToRename.FileName == newFileName {
 		logger.Info("RenameFile: New file name is same as old, no operation needed", zap.Uint64("fileID", fileID), zap.String("fileName", newFileName))
 		return fileToRename, nil
 	}
 
-	// 5. 处理命名冲突,检查当前目录下是否存在同名文件
+	// 处理命名冲突,检查当前目录下是否存在同名文件
 	finalFileName, err := s.resolveFileNameConflict(userID, fileToRename.ParentFolderID, newFileName, fileToRename.ID, fileToRename.IsFolder)
 	if err != nil {
 		return nil, err // 错误已在 resolveFileNameConflict 中记录
@@ -745,14 +829,8 @@ func (s *fileService) MoveFile(userID uint64, fileID uint64, targetParentID *uin
 		return nil, fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
-	// 权限检查
-	if fileToMove.UserID != userID {
-		logger.Warn("MoveFile: Access denied", zap.Uint64("fileID", fileID), zap.Uint64("requesterID", userID), zap.Uint64("ownerID", fileToMove.UserID))
-		return nil, errors.New("access denied: file or folder does not belong to user")
-	}
-
 	// 检查文件自身是否处于正常状态 (例如未被软删除或状态异常)
-	if err = s.checkFile(fileToMove); err != nil {
+	if err = s.checkFile(fileToMove, userID); err != nil {
 		logger.Warn("MoveFile: Cannot rename a deleted or abnormal file", zap.Uint64("fileID", fileID), zap.Uint8("status", fileToMove.Status))
 		return nil, err
 	}

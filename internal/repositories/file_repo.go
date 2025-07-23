@@ -1,6 +1,7 @@
 package repositories
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
@@ -24,6 +25,7 @@ type FileRepository interface {
 	// 查找指定父文件夹下所有文件，包括软删除的 (用于恢复逻辑中的路径检查)
 	FindAllFilesByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 	FindChildrenByPathPrefix(userID uint64, pathPrefix string) ([]models.File, error)
+	CountFilesInStorage(ossKey string, md5Hash string, excludeFileID uint64) (int64, error)
 
 	UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldPathPrefix, newPathPrefix string) error
 	Update(file *models.File) error
@@ -203,4 +205,26 @@ func (r *fileRepository) UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldP
 	return tx.Model(&models.File{}).
 		Where("user_id = ? AND path LIKE ?", userID, oldPathPrefix+"%").
 		Update("path", gorm.Expr("REPLACE(path, ?, ?)", oldPathPrefix, newPathPrefix)).Error
+}
+
+// CountFilesInStorage 根据 OssKey 和 MD5Hash 检查数据库中是否存在除给定 fileID 之外的其他文件记录
+// 返回引用该 OssKey 的文件数量 (包括自身，但不包括已逻辑删除的或正在被删除的)
+// 传入 currentDeletingFileID 是为了在计算引用数时排除当前正在永久删除的文件，避免计算错误。
+// 在本函数中，我们应该计算所有"正常"状态的引用。
+func (r *fileRepository) CountFilesInStorage(ossKey string, md5Hash string, excludeFileID uint64) (int64, error) {
+	var count int64
+	// 查找所有 status = 1 (正常) 的文件记录，且 OssKey 和 MD5Hash 匹配
+	// 同时排除当前正在被永久删除的文件记录本身
+	err := r.db.Model(&models.File{}).
+		Where("oss_key = ? AND md5_hash = ? AND status = 1 AND id != ?", ossKey, md5Hash, excludeFileID).
+		Count(&count).Error
+	if err != nil {
+		logger.Error("Failed to count files in storage for ossKey",
+			zap.String("ossKey", ossKey),
+			zap.String("md5Hash", md5Hash),
+			zap.Uint64("excludeFileID", excludeFileID),
+			zap.Error(err))
+		return 0, fmt.Errorf("failed to count files in storage: %w", err)
+	}
+	return count, nil
 }

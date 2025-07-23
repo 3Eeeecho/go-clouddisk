@@ -122,18 +122,15 @@ func (s *fileService) resolveFileNameConflict(userID uint64, parentFolderID *uin
 }
 
 // 检查目标文件是否处于正常的可操作状态
-func (s *fileService) checkFile(fileToCheck *models.File) error {
+func (s *fileService) checkFile(fileToCheck *models.File, userID uint64) error {
 	if fileToCheck == nil {
 		return xerr.ErrFileNotFound
 	}
 
-	var existingFile models.File
-	if err := s.db.Where("id = ?", fileToCheck.ID).First(&existingFile).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			logger.Warn("file not exist", zap.Uint64("file_id", fileToCheck.ID))
-			return fmt.Errorf("%w: ID %d", xerr.ErrFileNotFound, fileToCheck.ID) // 使用 errors.Wrap
-		}
-		return fmt.Errorf("database query error for file %d: %w", fileToCheck.ID, err)
+	// 权限检查：确保文件属于当前用户
+	if fileToCheck.UserID != userID {
+		logger.Warn("Access denied for file", zap.Uint64("fileID", fileToCheck.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", fileToCheck.UserID))
+		return errors.New("access denied: file does not belong to user")
 	}
 
 	if fileToCheck.DeletedAt.Valid {
@@ -144,8 +141,8 @@ func (s *fileService) checkFile(fileToCheck *models.File) error {
 }
 
 // CheckDirectory 是一个辅助函数，用于检查一个文件是否是有效的目录
-func (s *fileService) checkDirectory(dirToCheck *models.File) error {
-	if err := s.checkFile(dirToCheck); err != nil {
+func (s *fileService) checkDirectory(dirToCheck *models.File, userID uint64) error {
+	if err := s.checkFile(dirToCheck, userID); err != nil {
 		return err // 如果文件本身不可用，直接返回
 	}
 	// 根据你的 models.File.IsFolder 定义：1 为文件夹
