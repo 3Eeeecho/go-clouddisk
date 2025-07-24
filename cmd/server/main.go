@@ -43,8 +43,8 @@ func main() {
 	}
 
 	// 初始化Elasticsearch
-	database.InitElasticsearchClient(&cfg.Elasticsearch)
-	logger.Info("Elasticsearch client initialized.")
+	// database.InitElasticsearchClient(&cfg.Elasticsearch)
+	// logger.Info("Elasticsearch client initialized.")
 
 	// 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig

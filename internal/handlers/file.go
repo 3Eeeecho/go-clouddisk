@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
@@ -229,7 +230,7 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 			return
 		}
 
-		fileModel, fileReader, err := fileService.GetFileForDownload(currentUserID, fileID)
+		fileModel, fileReader, err := fileService.DownloadFile(currentUserID, fileID)
 		if err != nil {
 			if err.Error() == "file not found" || err.Error() == "physical file not found on disk" {
 				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, err.Error())
@@ -303,6 +304,68 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 
 		// ServeContent 会自动处理 Content-Length, Content-Type, Content-Disposition, Range 请求等
 		http.ServeContent(c.Writer, c.Request, fileName, lastModified, seekableReader)
+	}
+}
+
+func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userID, exists := c.Get("userID") // 从 AuthMiddleware 获取 userID
+		if !exists {
+			logger.Error("DownloadFolder: UserID not found in context")
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not authenticated"})
+			return
+		}
+		currentUserID := userID.(uint64)
+
+		folderIDStr := c.Param("id")
+		folderID, err := strconv.ParseUint(folderIDStr, 10, 64)
+		if err != nil {
+			logger.Warn("DownloadFolder: Invalid folder ID format", zap.String("folderIDStr", folderIDStr), zap.Error(err))
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid folder ID"})
+			return
+		}
+
+		folder, zipReader, err := fileService.DownloadFolder(currentUserID, folderID)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "access denied") {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			} else if strings.Contains(err.Error(), "cannot download a file") {
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			} else {
+				logger.Error("DownloadFolder: Failed to get folder for download",
+					zap.Uint64("folderID", folderID),
+					zap.Uint64("userID", currentUserID),
+					zap.Error(err))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare folder for download"})
+			}
+			return
+		}
+		defer zipReader.Close() // 确保在请求结束时关闭 zipReader
+
+		// 设置响应头
+		c.Header("Content-Type", "application/zip")
+		// 建议使用 folder.FileName + ".zip" 作为下载文件名
+		downloadFileName := fmt.Sprintf("%s.zip", folder.FileName)
+		c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", downloadFileName))
+		c.Header("Content-Transfer-Encoding", "binary")
+		c.Header("Expires", "0")
+		c.Header("Cache-Control", "must-revalidate")
+		c.Header("Pragma", "public")
+
+		// 流式传输 ZIP 数据
+		_, err = io.Copy(c.Writer, zipReader)
+		if err != nil {
+			// io.Copy 错误通常表示客户端连接中断，或在写入过程中发生其他网络错误。
+			// 这不一定是服务器内部错误，但应该记录。
+			logger.Error("DownloadFolder: Failed to write ZIP stream to HTTP response",
+				zap.Uint64("folderID", folderID),
+				zap.Uint64("userID", currentUserID),
+				zap.Error(err))
+			// 通常不需要再次 c.JSON，因为头部可能已经发送
+		}
+		logger.Info("DownloadFolder: Folder ZIP stream sent successfully",
+			zap.Uint64("folderID", folderID),
+			zap.Uint64("userID", currentUserID))
 	}
 }
 

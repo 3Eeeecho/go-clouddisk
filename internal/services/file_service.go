@@ -19,6 +19,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zip"
 	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -28,7 +29,8 @@ type FileService interface {
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 	UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
-	GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) // 获取文件信息用于下载
+	DownloadFile(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)     // 下载文件
+	DownloadFolder(userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) //下载文件夹
 	SoftDeleteFile(userID uint64, fileID uint64) error
 	PermanentDeleteFile(userID uint64, fileID uint64) error
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
@@ -332,7 +334,7 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 	return newFolder, nil
 }
 
-func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) {
+func (s *fileService) DownloadFile(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) {
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -412,6 +414,115 @@ func (s *fileService) GetFileForDownload(userID uint64, fileID uint64) (*models.
 	return file, fileReader, nil
 }
 
+func (s *fileService) DownloadFolder(userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) {
+	logger.Debug("DownloadFolder called", zap.Uint64("folderID", folderID), zap.Uint64("userID", userID))
+	// 验证根文件夹是否存在且属于用户
+	rootFolder, err := s.fileRepo.FindByID(folderID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Warn("DownloadFolder: Folder not found in DB", zap.Uint64("folderID", folderID))
+			return nil, nil, errors.New("folder not found")
+		}
+		logger.Error("DownloadFolder: Error retrieving folder from DB", zap.Uint64("folderID", folderID), zap.Error(err))
+		return nil, nil, fmt.Errorf("failed to retrieve folder from DB: %w", err)
+	}
+
+	err = s.checkDirectory(rootFolder, userID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// 2. 收集所有子文件和子文件夹的记录
+	// 假设你有 collectAllChildren 这样的函数，它能递归地获取一个文件夹下的所有文件和子文件夹
+	// collectAllChildren 应该返回一个扁平化的列表
+	allChildren, err := s.collectAllChildren(folderID, userID)
+	if err != nil {
+		logger.Error("DownloadFolder: Failed to collect children for folder", zap.Uint64("folderID", folderID), zap.Error(err))
+		return nil, nil, fmt.Errorf("failed to collect folder children: %w", err)
+	}
+	filesToCompress := append([]models.File{*rootFolder}, allChildren...)
+
+	// 使用 pipe 来实现流式 ZIP 压缩
+	// reader 用于从 pipe 读取 ZIP 数据，writer 用于向 pipe 写入 ZIP 数据
+	pr, pw := io.Pipe()
+	go func() {
+		zipWriter := zip.NewWriter(pw)
+		for _, fileRecord := range filesToCompress {
+			// 如果是文件夹，则在 ZIP 中创建对应的目录项
+			if fileRecord.IsFolder == 1 {
+				relativePath := s.getRelativePathInZip(rootFolder, &fileRecord)
+				if !strings.HasSuffix(relativePath, "/") {
+					relativePath += "/"
+				}
+				_, err := zipWriter.Create(relativePath)
+				if err != nil {
+					logger.Error("DownloadFolder: Failed to create folder entry in zip",
+						zap.String("folderPath", relativePath),
+						zap.Uint64("folderID", fileRecord.ID),
+						zap.Error(err))
+					// 通常这里会继续处理下一个文件或回滚，取决于错误性质
+					pw.CloseWithError(fmt.Errorf("failed to create folder entry %s: %w", relativePath, err))
+					return
+				}
+				logger.Debug("DownloadFolder: Created folder entry in zip", zap.String("path", relativePath))
+				continue
+			}
+
+			// 如果是文件，从存储中获取内容并写入 ZIP
+			fileContentReader, getErr := s.getFileContentReader(fileRecord)
+			if getErr != nil {
+				logger.Error("DownloadFolder: Failed to get file content reader",
+					zap.Uint64("fileID", fileRecord.ID),
+					zap.String("ossKey", *fileRecord.OssKey),
+					zap.Error(getErr))
+				// 如果一个文件下载失败,终止整个 ZIP 过程 (保证完整性，但可能中断下载)
+				pw.CloseWithError(fmt.Errorf("failed to get content for file %s: %w", fileRecord.FileName, getErr))
+				return
+			}
+			defer fileContentReader.Close()
+
+			relativePath := s.getRelativePathInZip(rootFolder, &fileRecord)
+			header := &zip.FileHeader{
+				Name:               relativePath,
+				Method:             zip.Deflate,
+				Modified:           fileRecord.UpdatedAt,
+				UncompressedSize64: fileRecord.Size,
+			}
+
+			written, err := zipWriter.CreateHeader(header)
+			if err != nil {
+				logger.Error("DownloadFolder: Failed to create file header in zip",
+					zap.String("filePath", relativePath),
+					zap.Uint64("fileID", fileRecord.ID),
+					zap.Error(err))
+				pw.CloseWithError(fmt.Errorf("failed to create zip header for %s: %w", relativePath, err))
+				return
+			}
+
+			_, err = io.Copy(written, fileContentReader)
+			if err != nil {
+				logger.Error("DownloadFolder: Failed to copy file content to zip writer",
+					zap.String("filePath", relativePath),
+					zap.Uint64("fileID", fileRecord.ID),
+					zap.Error(err))
+				pw.CloseWithError(fmt.Errorf("failed to copy content for %s to zip: %w", relativePath, err))
+				return
+			}
+			logger.Debug("DownloadFolder: Added file to zip", zap.String("path", relativePath), zap.Uint64("size", fileRecord.Size))
+		}
+		// 关闭 zipWriter，将其缓冲区的任何剩余数据写入底层 writer (pw)
+		if err := zipWriter.Close(); err != nil {
+			logger.Error("DownloadFolder: Failed to close zip writer", zap.Error(err))
+			pw.CloseWithError(fmt.Errorf("failed to close zip writer: %w", err))
+			return
+		}
+		pw.Close()
+		logger.Info("DownloadFolder: ZIP creation finished for folder", zap.Uint64("folderID", folderID))
+	}()
+
+	return rootFolder, pr, nil
+}
+
 // SoftDeleteFile 软删除文件或文件夹
 func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	file, err := s.fileRepo.FindByID(fileID)
@@ -435,7 +546,7 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	}
 
 	// 获取所有需要删除的文件或文件夹及其所有子项
-	filesToDelete, err := s.collectFilesForDeletion(fileID, userID)
+	filesToDelete, err := s.collectAllChildren(fileID, userID)
 	if err != nil {
 		logger.Error("SoftDeleteFile: Failed to collect files for soft deletion", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("failed to collect files for soft deletion: %w", err)
@@ -506,7 +617,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 	}
 
 	// 收集所有需要永久删除的文件和文件夹
-	filesToPermanentlyDelete, err := s.collectFilesForDeletion(fileID, userID)
+	filesToPermanentlyDelete, err := s.collectAllChildren(fileID, userID)
 	if err != nil {
 		logger.Error("PermanentDeleteFile: Failed to collect files for permanent deletion", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("failed to collect files for permanent deletion: %w", err)
@@ -691,9 +802,9 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 	}()
 
 	// 6. 收集所有需要恢复的文件和文件夹 (包括子项)
-	// collectFilesForDeletion 能够获取根文件及其所有（包括软删除的）子项
+	// collectAllChildren 能够获取根文件及其所有（包括软删除的）子项
 	// 注意：这里收集到的 rootFile 还是原始文件名，需要在循环里更新
-	filesToRestore, err := s.collectFilesForDeletion(fileID, userID)
+	filesToRestore, err := s.collectAllChildren(fileID, userID)
 	if err != nil {
 		tx.Rollback()
 		logger.Error("RestoreFile: Failed to collect files for restoration", zap.Uint64("fileID", fileID), zap.Error(err))
@@ -702,7 +813,7 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 
 	//批量恢复数据库记录
 	for _, fileToUpdate := range filesToRestore {
-		// 权限再次检查 (尽管 collectFilesForDeletion 已经过滤了)
+		// 权限再次检查 (尽管 collectAllChildren 已经过滤了)
 		if fileToUpdate.UserID != userID {
 			tx.Rollback()
 			logger.Error("RestoreFile: File ownership mismatch during batch restoration",

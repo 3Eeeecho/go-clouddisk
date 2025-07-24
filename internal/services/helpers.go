@@ -1,21 +1,26 @@
 package services
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
+	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
 
-// collectFilesForDeletion 辅助函数：收集需要删除的文件和文件夹（包括其所有子项）
+// collectAllChildren 辅助函数：收集所有子项文件以及文件夹
 // 这里使用 BFS (广度优先搜索) 遍历，避免深层递归导致的栈溢出
 // 返回一个切片，包含所有需要处理的 models.File 记录
-func (s *fileService) collectFilesForDeletion(rootFileID uint64, userID uint64) ([]models.File, error) {
+func (s *fileService) collectAllChildren(rootFileID uint64, userID uint64) ([]models.File, error) {
 	logger.Debug("collectFilesForDeletion called", zap.Uint64("rootFileID", rootFileID), zap.Uint64("userID", userID))
 	rootFile, err := s.fileRepo.FindByID(rootFileID)
 	if err != nil {
@@ -191,4 +196,85 @@ func (s *fileService) ValidateParentFolder(userID uint64, parentFolderID *uint64
 	}
 
 	return parentFolder, nil
+}
+
+// getRelativePathInZip 计算文件或文件夹在 ZIP 包中的相对路径。
+// rootFolder: 用户选择下载的根文件夹的 models.File 对象
+// fileRecord: 当前正在处理的文件或文件夹的 models.File 对象
+func (s *fileService) getRelativePathInZip(rootFolder *models.File, fileRecord *models.File) string {
+	// 1. 获取根文件夹在ZIP中应作为前缀的名称 (例如 "我的文档/")
+	zipRootPrefix := rootFolder.FileName
+	if rootFolder.IsFolder == 1 && !strings.HasSuffix(zipRootPrefix, "/") {
+		zipRootPrefix += "/" // 确保是目录
+	}
+
+	// 2. 如果当前 fileRecord 就是要下载的根文件夹本身，直接返回其 ZIP 前缀
+	if fileRecord.ID == rootFolder.ID {
+		return zipRootPrefix
+	}
+
+	// 3. 构建 fileRecord 在数据库中的完整路径（例如 "/users/user1/MyDocs/SubFolder/File.txt"）
+	// 确保 Path 以 / 结尾，FileName 不含 /
+	fileRecordDbPath := fileRecord.Path
+	if !strings.HasSuffix(fileRecordDbPath, "/") {
+		fileRecordDbPath += "/"
+	}
+	// 拼接文件名或文件夹名
+	fullDbPathWithFileName := fileRecordDbPath + fileRecord.FileName
+
+	// 4. 构建 rootFolder 在数据库中的完整路径，用于精确匹配和修剪
+	// 例如："/users/user1/MyDocs/"
+	rootFolderFullDbPath := rootFolder.Path
+	if !strings.HasSuffix(rootFolderFullDbPath, "/") {
+		rootFolderFullDbPath += "/"
+	}
+	rootFolderFullDbPath += rootFolder.FileName // 拼接根文件夹的文件名
+	if rootFolder.IsFolder == 1 && !strings.HasSuffix(rootFolderFullDbPath, "/") {
+		rootFolderFullDbPath += "/" // 如果是文件夹，确保以 / 结尾
+	}
+
+	// 5. 从 fileRecord 的完整路径中移除 rootFolder 的完整路径前缀
+	// TrimPrefix 会处理前导斜杠的问题，只要前缀匹配
+	relativePath := strings.TrimPrefix(fullDbPathWithFileName, rootFolderFullDbPath)
+
+	// 6. 移除可能留下的任何前导斜杠（如果 rootFolderFullDbPath 没有完全匹配到文件路径开头）
+	relativePath = strings.TrimPrefix(relativePath, "/")
+
+	// 7. 如果是子文件夹，确保其在 ZIP 中的路径以斜杠结尾
+	if fileRecord.IsFolder == 1 && !strings.HasSuffix(relativePath, "/") {
+		relativePath += "/"
+	}
+
+	// 最终拼接 zipRootPrefix
+	return zipRootPrefix + relativePath
+}
+
+// getFileContentReader 是一个辅助函数，用于根据存储类型获取文件内容 Reader
+// 这个函数与 DownloadFile 逻辑类似，但返回 io.ReadCloser
+func (s *fileService) getFileContentReader(file models.File) (io.ReadCloser, error) {
+	if file.OssKey == nil || *file.OssKey == "" {
+		return nil, errors.New("file has no oss key")
+	}
+
+	switch s.cfg.Storage.Type {
+	case "local":
+		localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *file.OssKey)
+		f, err := os.Open(localFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open local file %s: %w", localFilePath, err)
+		}
+		return f, nil
+	case "minio":
+		bucketName := s.cfg.MinIO.BucketName
+		if file.OssBucket != nil && *file.OssBucket != "" {
+			bucketName = *file.OssBucket
+		}
+		obj, err := s.minioClient.GetObject(context.Background(), bucketName, *file.OssKey, minio.GetObjectOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get object from minio %s/%s: %w", bucketName, *file.OssKey, err)
+		}
+		return obj, nil
+	default:
+		return nil, errors.New("unsupported storage type")
+	}
 }
