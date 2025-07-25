@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,7 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
@@ -230,80 +230,39 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 			return
 		}
 
-		fileModel, fileReader, err := fileService.DownloadFile(currentUserID, fileID)
+		// 调用服务层，并传入 context
+		file, reader, err := fileService.DownloadFile(c.Request.Context(), currentUserID, fileID) // <--- 传入 c.Request.Context()
 		if err != nil {
-			if err.Error() == "file not found" || err.Error() == "physical file not found on disk" {
-				xerr.Error(c, http.StatusNotFound, xerr.CodeNotFound, err.Error())
-				return
+			if strings.Contains(err.Error(), "文件未找到") || strings.Contains(err.Error(), "物理文件在云存储中未找到") {
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			} else if strings.Contains(err.Error(), "无权") || strings.Contains(err.Error(), "无法下载文件夹") { // 增加文件夹错误判断
+				c.JSON(http.StatusForbidden, gin.H{"error": err.Error()})
+			} else {
+				logger.Error("DownloadFile: Failed to download file", zap.Uint64("fileID", fileID), zap.Error(err))
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("下载文件失败: %v", err)})
 			}
-			if err.Error() == "access denied: file does not belong to user" {
-				xerr.Error(c, http.StatusForbidden, xerr.CodeForbidden, err.Error())
-				return
-			}
-			if err.Error() == "cannot download a folder" {
-				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
-				return
-			}
-			if err.Error() == "file is not available for download" {
-				xerr.Error(c, http.StatusGone, xerr.CodeFileNotAvailable, err.Error()) // 例如，文件已在回收站
-				return
-			}
-			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to prepare file for download: %v", err))
 			return
 		}
-		defer fileReader.Close() // 确保文件读取器关闭
+		defer reader.Close() // 确保 reader 在请求结束后关闭
 
-		// 尝试将 fileReader 转换为 *os.File，以便利用其 Stat() 方法和 ReadSeekCloser 接口
-		// http.ServeContent 最好接收一个 io.ReadSeeker 接口
-		var seekableReader io.ReadSeeker
-		var lastModified time.Time
-		var fileSize int64
+		// 设置响应头，强制浏览器下载文件
 
-		if osFile, ok := fileReader.(*os.File); ok {
-			fileInfo, statErr := osFile.Stat()
-			if statErr == nil {
-				seekableReader = osFile
-				lastModified = fileInfo.ModTime()
-				fileSize = fileInfo.Size()
-			} else {
-				// 如果 Stat 失败，仍然可以使用普通的 io.Reader，但 ServeContent 功能会受限
-				// 对于这种情况，http.ServeContent 内部会进行 io.Copy
-				seekableReader = fileReader.(io.ReadSeeker) // 这里强制转换，因为它必须是 ReadSeeker
-				lastModified = fileModel.UpdatedAt          // 使用数据库中的更新时间作为 Last-Modified
-				fileSize = int64(fileModel.Size)
-			}
-		} else {
-			// 如果不是 *os.File，则假设它已经是 io.ReadSeeker 并且没有更具体的 FileInfo
-			seekableReader = fileReader.(io.ReadSeeker)
-			lastModified = fileModel.UpdatedAt
-			fileSize = int64(fileModel.Size)
+		// 构建 Content-Disposition 头，使用 RFC 6266 推荐的 filename* 参数支持 UTF-8
+		// filename* 是标准解决方案，filename 用于向后兼容，但最好不要直接包含非ASCII字符
+		contentDisposition := fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
+			url.PathEscape(file.FileName), // 对于不支持 filename* 的旧浏览器，提供一个 URL 编码的兼容版本
+			url.PathEscape(file.FileName), // 规范的 UTF-8 编码文件名 (这是首选)
+		)
+		c.Header("Content-Disposition", contentDisposition)
+		c.Header("Content-Type", *file.MimeType) // 使用文件元数据中的 MimeType
+		c.Header("Content-Length", fmt.Sprintf("%d", file.Size))
+		// 将文件内容流式传输给客户端
+		_, err = io.Copy(c.Writer, reader)
+		if err != nil {
+			logger.Error("DownloadFile: Failed to stream file content", zap.Uint64("fileID", fileID), zap.Error(err))
+			// 注意：这里可能无法发送新的HTTP状态码，因为头部已经发送，但可以记录错误
+			// c.JSON(http.StatusInternalServerError, gin.H{"error": "文件传输失败"}) // 不要在这里再发JSON响应
 		}
-
-		// 设置文件名
-		fileName := fileModel.FileName
-
-		// 使用 http.ServeContent 进行下载
-		// 强制设置Content-Type,ServeContent有时会错误处理,无法正确嗅探或推断出其正确的 MIME 类型
-		if fileModel.MimeType == nil || *fileModel.MimeType == "" {
-			// 如果 MIME 类型为空，尝试根据文件名推断一个默认的，避免空值导致错误
-			c.Writer.Header().Set("Content-Type", "application/octet-stream")
-		} else {
-			c.Writer.Header().Set("Content-Type", *fileModel.MimeType)
-		}
-
-		encodedFileName := url.PathEscape(fileName)
-		c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"; filename*=%s''%s`,
-			encodedFileName,
-			"UTF-8",         // 编码方式
-			encodedFileName, // 编码后的文件名
-		))
-
-		if fileSize > 0 { // 假设 fileSize 已正确获取
-			c.Writer.Header().Set("Content-Length", strconv.FormatInt(fileSize, 10))
-		}
-
-		// ServeContent 会自动处理 Content-Length, Content-Type, Content-Disposition, Range 请求等
-		http.ServeContent(c.Writer, c.Request, fileName, lastModified, seekableReader)
 	}
 }
 
@@ -325,7 +284,7 @@ func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.Ha
 			return
 		}
 
-		folder, zipReader, err := fileService.DownloadFolder(currentUserID, folderID)
+		folder, zipReader, err := fileService.DownloadFolder(context.Background(), currentUserID, folderID)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "access denied") {
 				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})

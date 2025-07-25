@@ -1,4 +1,4 @@
-package database
+package setup
 
 import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"

@@ -14,6 +14,7 @@ type Config struct {
 	MySQL         MySQLConfig         `mapstructure:"mysql"`
 	Redis         RedisConfig         `mapstructure:"redis"`
 	MinIO         MinIOConfig         `mapstructure:"minio"`
+	AliyunOSS     AliyunOSSConfig     `mapstructure:"aliyun_oss"`
 	RabbitMQ      RabbitMQConfig      `mapstructure:"rabbitmq"`
 	JWT           JWTConfig           `mapstructure:"jwt"`
 	Storage       StorageConfig       `mapstructure:"storageconfig"`
@@ -45,6 +46,14 @@ type MinIOConfig struct {
 	SecretAccessKey string `mapstructure:"secret_access_key"`
 	UseSSL          bool   `mapstructure:"use_ssl"`
 	BucketName      string `mapstructure:"bucket_name"`
+}
+
+type AliyunOSSConfig struct {
+	Endpoint        string `mapstructure:"endpoint"` // 例如: oss-cn-hangzhou.aliyuncs.com
+	AccessKeyID     string `mapstructure:"access_key_id"`
+	SecretAccessKey string `mapstructure:"secret_access_key"`
+	BucketName      string `mapstructure:"bucket_name"`
+	UseSSL          bool   `mapstructure:"use_ssl"` // OSS SDK 默认是HTTPS，但为了明确
 }
 
 // RabbitMQConfig RabbitMQ配置

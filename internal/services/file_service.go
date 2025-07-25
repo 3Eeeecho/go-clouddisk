@@ -9,18 +9,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
 	"github.com/klauspost/compress/zip"
-	"github.com/minio/minio-go/v7"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -29,8 +28,8 @@ type FileService interface {
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 	UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
-	DownloadFile(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)     // 下载文件
-	DownloadFolder(userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) //下载文件夹
+	DownloadFile(ctx context.Context, userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)     // 下载文件
+	DownloadFolder(ctx context.Context, userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) //下载文件夹
 	SoftDeleteFile(userID uint64, fileID uint64) error
 	PermanentDeleteFile(userID uint64, fileID uint64) error
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
@@ -40,23 +39,23 @@ type FileService interface {
 }
 
 type fileService struct {
-	fileRepo    repositories.FileRepository
-	userRepo    repositories.UserRepository
-	cfg         *config.Config
-	db          *gorm.DB
-	minioClient *minio.Client
+	fileRepo           repositories.FileRepository
+	userRepo           repositories.UserRepository
+	cfg                *config.Config
+	db                 *gorm.DB
+	fileStorageService storage.StorageService
 }
 
 var _ FileService = (*fileService)(nil)
 
 // NewFileService 创建一个新的文件服务实例
-func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB, minioClient *minio.Client) FileService {
+func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB, fileStorageService storage.StorageService) FileService {
 	return &fileService{
-		fileRepo:    fileRepo,
-		userRepo:    userRepo,
-		cfg:         cfg,
-		db:          db,
-		minioClient: minioClient,
+		fileRepo:           fileRepo,
+		userRepo:           userRepo,
+		cfg:                cfg,
+		db:                 db,
+		fileStorageService: fileStorageService,
 	}
 }
 
@@ -173,18 +172,13 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 			zap.String("bucket", s.cfg.MinIO.BucketName),
 			zap.String("ossKey", ossKey))
 
-		info, err := s.minioClient.PutObject(context.Background(),
+		info, err := s.fileStorageService.PutObject(context.Background(),
 			s.cfg.MinIO.BucketName,
 			ossKey,
 			fileContent,
 			int64(filesize),
-			minio.PutObjectOptions{
-				ContentType: mimeType,
-				UserMetadata: map[string]string{
-					"originalFileName": originalName,
-					"userID":           strconv.FormatUint(userID, 10),
-				},
-			})
+			mimeType,
+		)
 
 		if err != nil {
 			logger.Error("Failed to upload file to MinIO",
@@ -251,7 +245,7 @@ func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, f
 		logger.Error("Failed to save file record to database", zap.String("file", originalName), zap.Error(err))
 		switch s.cfg.Storage.Type {
 		case "minio":
-			removeErr := s.minioClient.RemoveObject(context.Background(), s.cfg.MinIO.BucketName, ossKey, minio.RemoveObjectOptions{})
+			removeErr := s.fileStorageService.RemoveObject(context.Background(), s.cfg.MinIO.BucketName, ossKey)
 			if removeErr != nil {
 				logger.Error("Failed to remove MinIO object after DB save failure",
 					zap.String("ossKey", ossKey), zap.Error(removeErr))
@@ -334,87 +328,84 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 	return newFolder, nil
 }
 
-func (s *fileService) DownloadFile(userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) {
+func (s *fileService) DownloadFile(ctx context.Context, userID uint64, fileID uint64) (*models.File, io.ReadCloser, error) {
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			logger.Warn("File not found in DB", zap.Uint64("fileID", fileID))
-			return nil, nil, errors.New("file not found")
+			logger.Warn("DownloadFile: File not found in DB", zap.Uint64("fileID", fileID))
+			return nil, nil, errors.New("文件未找到")
 		}
-		logger.Error("Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
-		return nil, nil, fmt.Errorf("failed to retrieve file from DB: %w", err)
+		logger.Error("DownloadFile: Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil, nil, fmt.Errorf("从数据库获取文件失败: %w", err)
 	}
 
 	if file.IsFolder == 1 { // 假设 IsFolder 为 1 表示是文件夹
-		logger.Warn("Attempted to download a folder", zap.Uint64("folderID", fileID))
+		logger.Warn("DownloadFile: Attempted to download a folder", zap.Uint64("folderID", fileID))
 		// 显式返回一个错误，说明不能下载文件夹
-		return nil, nil, errors.New("cannot download a folder")
+		return nil, nil, errors.New("无法下载文件夹")
 	}
 
-	// 检查文件状态是否正常 (例如，不在回收站)
-	err = s.checkFile(file, userID)
+	// 检查文件状态是否正常 (例如，不在回收站) 和权限
+	err = s.checkFile(file, userID) // 假设 checkFile 包含权限检查
 	if err != nil {
-		return nil, nil, err
+		logger.Error("DownloadFile: File check failed", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil, nil, err // 错误已在 checkFile 中处理
 	}
 
 	// 检查 OssKey 是否存在
 	if file.OssKey == nil || *file.OssKey == "" {
-		logger.Error("File record has no OssKey, cannot retrieve physical file", zap.Uint64("fileID", file.ID))
-		return nil, nil, errors.New("file data unavailable (missing OssKey)")
+		logger.Error("DownloadFile: File record has no OssKey, cannot retrieve physical file", zap.Uint64("fileID", file.ID))
+		return nil, nil, errors.New("文件数据不可用（缺少存储键）")
 	}
 
-	var fileReader io.ReadSeekCloser
+	var reader io.ReadCloser // 使用 io.ReadCloser
+	var bucketName string
 
-	// 根据配置的存储类型打开文件
-	switch s.cfg.Storage.Type {
-	case "local":
-		localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *file.OssKey)
-		logger.Info("Opening physical file for download", zap.String("path", localFilePath))
-
-		fileReader, err = os.Open(localFilePath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				logger.Warn("Physical file not found on disk for DB record ID", zap.Uint64("fileID", file.ID), zap.String("path", localFilePath), zap.Error(err))
-				return nil, nil, errors.New("physical file not found on disk")
-			}
-			logger.Error("Error opening physical file for download", zap.String("path", localFilePath), zap.Error(err))
-			return nil, nil, fmt.Errorf("failed to open physical file for download: %w", err)
+	// 根据文件记录中实际存储的 BucketName 来决定
+	if file.OssBucket != nil && *file.OssBucket != "" {
+		bucketName = *file.OssBucket
+	} else {
+		// 如果文件记录中没有指定 BucketName，使用默认配置中的 BucketName
+		switch s.cfg.Storage.Type {
+		case "minio":
+			bucketName = s.cfg.MinIO.BucketName
+		case "aliyun_oss":
+			bucketName = s.cfg.AliyunOSS.BucketName
 		}
-		logger.Info("Physical file opened successfully. Returning file and reader.", zap.String("path", localFilePath))
-	case "minio":
-		// 实现 MinIO 的下载逻辑
-		bucketName := s.cfg.MinIO.BucketName
-		if file.OssBucket != nil && *file.OssBucket != "" {
-			bucketName = *file.OssBucket
-		}
-
-		logger.Info("Attempting to get object from MinIO for download",
-			zap.String("bucket", bucketName),
-			zap.String("ossKey", *file.OssKey))
-
-		fileReader, err = s.minioClient.GetObject(context.Background(), bucketName, *file.OssKey, minio.GetObjectOptions{})
-		if err != nil {
-			// 检查是否是对象不存在的错误
-			if strings.Contains(err.Error(), "The specified key does not exist") || strings.Contains(err.Error(), "NoSuchKey") {
-				logger.Warn("Physical file not found in MinIO for DB record ID",
-					zap.Uint64("fileID", file.ID), zap.String("ossKey", *file.OssKey), zap.Error(err))
-				return nil, nil, errors.New("physical file not found in cloud storage")
-			}
-
-			logger.Error("Failed to get object from MinIO for download",
-				zap.String("ossKey", *file.OssKey), zap.Error(err))
-			return nil, nil, fmt.Errorf("failed to get file from cloud storage: %w", err)
-		}
-		logger.Info("Object retrieved successfully from MinIO. Returning file and reader.",
-			zap.String("bucket", bucketName), zap.String("ossKey", *file.OssKey))
-	default:
-		return nil, nil, errors.New("unsupported storage type configured")
+		logger.Warn("DownloadFile: OssBucket is missing in file record, using default bucket name",
+			zap.Uint64("fileID", file.ID), zap.String("defaultBucket", bucketName))
 	}
 
-	return file, fileReader, nil
+	// 使用抽象的 fileStorageService 进行下载
+	// 注意：GetObject 应该返回 GetObjectResult，包含 Reader
+	objResult, err := s.fileStorageService.GetObject(ctx, bucketName, *file.OssKey)
+	if err != nil {
+		// 存储服务特定的“对象不存在”错误判断可能需要调整，
+		// 比如 MinIO SDK 返回的错误字符串或错误类型，Aliyun OSS 返回的错误类型。
+		// 这里尝试通用判断，但最好在各自的 StorageService 实现中将“对象不存在”映射为一个统一的 error.Is 错误类型。
+		// 例如：if errors.Is(err, storage.ErrObjectNotFound) { ... }
+		if strings.Contains(err.Error(), "key does not exist") ||
+			strings.Contains(err.Error(), "NoSuchKey") ||
+			strings.Contains(err.Error(), "not found") { // 通用错误字符串判断
+			logger.Warn("DownloadFile: Physical file not found in cloud storage for DB record ID",
+				zap.Uint64("fileID", file.ID), zap.String("ossKey", *file.OssKey), zap.Error(err))
+			return nil, nil, errors.New("物理文件在云存储中未找到")
+		}
+
+		logger.Error("DownloadFile: Failed to get object from cloud storage for download",
+			zap.String("ossKey", *file.OssKey), zap.Error(err))
+		return nil, nil, fmt.Errorf("从云存储获取文件失败: %w", err)
+	}
+
+	reader = objResult.Reader // 从结果中获取 ReadCloser
+
+	logger.Info("DownloadFile: Object retrieved successfully from cloud storage. Returning file and reader.",
+		zap.String("bucket", bucketName), zap.String("ossKey", *file.OssKey))
+
+	return file, reader, nil // 返回文件元数据和读取器
 }
 
-func (s *fileService) DownloadFolder(userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) {
+func (s *fileService) DownloadFolder(ctx context.Context, userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) {
 	logger.Debug("DownloadFolder called", zap.Uint64("folderID", folderID), zap.Uint64("userID", userID))
 	// 验证根文件夹是否存在且属于用户
 	rootFolder, err := s.fileRepo.FindByID(folderID)
@@ -446,11 +437,20 @@ func (s *fileService) DownloadFolder(userID uint64, folderID uint64) (*models.Fi
 	// reader 用于从 pipe 读取 ZIP 数据，writer 用于向 pipe 写入 ZIP 数据
 	pr, pw := io.Pipe()
 	go func() {
+		defer pw.Close()
 		zipWriter := zip.NewWriter(pw)
+		defer func() {
+			if err := zipWriter.Close(); err != nil {
+				logger.Error("DownloadFolder: 关闭 ZIP 写入器失败", zap.Error(err))
+				// 如果关闭 zipWriter 失败，也通过 pipe writer 传递错误
+				pw.CloseWithError(fmt.Errorf("关闭 ZIP 写入器失败: %w", err))
+			}
+		}()
+
 		for _, fileRecord := range filesToCompress {
 			// 如果是文件夹，则在 ZIP 中创建对应的目录项
+			relativePath := s.getRelativePathInZip(rootFolder, &fileRecord)
 			if fileRecord.IsFolder == 1 {
-				relativePath := s.getRelativePathInZip(rootFolder, &fileRecord)
 				if !strings.HasSuffix(relativePath, "/") {
 					relativePath += "/"
 				}
@@ -469,54 +469,62 @@ func (s *fileService) DownloadFolder(userID uint64, folderID uint64) (*models.Fi
 			}
 
 			// 如果是文件，从存储中获取内容并写入 ZIP
-			fileContentReader, getErr := s.getFileContentReader(fileRecord)
-			if getErr != nil {
-				logger.Error("DownloadFolder: Failed to get file content reader",
+			if fileRecord.OssKey == nil || *fileRecord.OssKey == "" {
+				logger.Warn("DownloadFolder: 文件记录缺少存储键（OssKey），在 ZIP 中跳过",
 					zap.Uint64("fileID", fileRecord.ID),
-					zap.String("ossKey", *fileRecord.OssKey),
-					zap.Error(getErr))
-				// 如果一个文件下载失败,终止整个 ZIP 过程 (保证完整性，但可能中断下载)
-				pw.CloseWithError(fmt.Errorf("failed to get content for file %s: %w", fileRecord.FileName, getErr))
-				return
-			}
-			defer fileContentReader.Close()
-
-			relativePath := s.getRelativePathInZip(rootFolder, &fileRecord)
-			header := &zip.FileHeader{
-				Name:               relativePath,
-				Method:             zip.Deflate,
-				Modified:           fileRecord.UpdatedAt,
-				UncompressedSize64: fileRecord.Size,
+					zap.String("fileName", fileRecord.FileName))
+				continue // 跳过没有物理文件的记录
 			}
 
-			written, err := zipWriter.CreateHeader(header)
-			if err != nil {
-				logger.Error("DownloadFolder: Failed to create file header in zip",
-					zap.String("filePath", relativePath),
-					zap.Uint64("fileID", fileRecord.ID),
-					zap.Error(err))
-				pw.CloseWithError(fmt.Errorf("failed to create zip header for %s: %w", relativePath, err))
-				return
-			}
+			// 使用一个匿名函数来封装文件读取和写入 ZIP 的逻辑，确保 defer 能够及时执行
+			func() {
+				// 获取文件内容读取器，并传入 goroutine 的上下文
+				fileContentReader, getErr := s.getFileContentReader(ctx, fileRecord) // <--- 传入 ctx
+				if getErr != nil {
+					logger.Error("DownloadFolder: 获取文件内容读取器失败",
+						zap.Uint64("fileID", fileRecord.ID),
+						zap.String("ossKey", *fileRecord.OssKey),
+						zap.Error(getErr))
+					pw.CloseWithError(fmt.Errorf("获取文件 %s 内容失败: %w", fileRecord.FileName, getErr))
+					return // 遇到错误立即退出匿名函数
+				}
+				defer fileContentReader.Close() // 确保每个文件读取器都被关闭
 
-			_, err = io.Copy(written, fileContentReader)
-			if err != nil {
-				logger.Error("DownloadFolder: Failed to copy file content to zip writer",
-					zap.String("filePath", relativePath),
-					zap.Uint64("fileID", fileRecord.ID),
-					zap.Error(err))
-				pw.CloseWithError(fmt.Errorf("failed to copy content for %s to zip: %w", relativePath, err))
-				return
-			}
-			logger.Debug("DownloadFolder: Added file to zip", zap.String("path", relativePath), zap.Uint64("size", fileRecord.Size))
+				// 创建 ZIP 文件头
+				header := &zip.FileHeader{
+					Name:     relativePath,
+					Method:   zip.Deflate,          // 默认使用 Deflate 压缩方法
+					Modified: fileRecord.UpdatedAt, // 使用文件更新时间
+				}
+				// 如果你存储了文件的原始大小，可以在这里设置 header.UncompressedSize64
+				if fileRecord.Size > 0 {
+					header.UncompressedSize64 = uint64(fileRecord.Size) // 确保类型匹配
+				}
+
+				writer, err := zipWriter.CreateHeader(header)
+				if err != nil {
+					logger.Error("DownloadFolder: 在 ZIP 中创建文件头失败",
+						zap.String("filePath", relativePath),
+						zap.Uint64("fileID", fileRecord.ID),
+						zap.Error(err))
+					pw.CloseWithError(fmt.Errorf("为 %s 创建 ZIP 头失败: %w", relativePath, err))
+					return // 遇到错误立即退出匿名函数
+				}
+
+				// 将文件内容从读取器复制到 ZIP 写入器
+				_, err = io.Copy(writer, fileContentReader)
+				if err != nil {
+					logger.Error("DownloadFolder: 复制文件内容到 ZIP 写入器失败",
+						zap.String("filePath", relativePath),
+						zap.Uint64("fileID", fileRecord.ID),
+						zap.Error(err))
+					pw.CloseWithError(fmt.Errorf("复制 %s 内容到 ZIP 失败: %w", relativePath, err))
+					return // 遇到错误立即退出匿名函数
+				}
+				logger.Debug("DownloadFolder: 文件已添加到 ZIP", zap.String("path", relativePath), zap.Uint64("size", fileRecord.Size))
+			}() // 立即执行匿名函数
 		}
-		// 关闭 zipWriter，将其缓冲区的任何剩余数据写入底层 writer (pw)
-		if err := zipWriter.Close(); err != nil {
-			logger.Error("DownloadFolder: Failed to close zip writer", zap.Error(err))
-			pw.CloseWithError(fmt.Errorf("failed to close zip writer: %w", err))
-			return
-		}
-		pw.Close()
+
 		logger.Info("DownloadFolder: ZIP creation finished for folder", zap.Uint64("folderID", folderID))
 	}()
 
@@ -688,7 +696,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 						zap.String("bucket", bucketName),
 						zap.String("ossKey", *fileToPermanentlyDelete.OssKey),
 						zap.Uint64("recordID", fileToPermanentlyDelete.ID))
-					err = s.minioClient.RemoveObject(context.Background(), bucketName, *fileToPermanentlyDelete.OssKey, minio.RemoveObjectOptions{})
+					err = s.fileStorageService.RemoveObject(context.Background(), bucketName, *fileToPermanentlyDelete.OssKey)
 					if err != nil {
 						tx.Rollback()
 						logger.Error("PermanentDeleteFile: Failed to delete object from MinIO",

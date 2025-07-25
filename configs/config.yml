@@ -16,6 +16,13 @@ minio:
   use_ssl: false
   bucket_name: "go-clouddisk-bucket"
 
+aliyun_oss:
+  endpoint: "oss-cn-hangzhou.aliyuncs.com(替换为你的实际 Endpoint)"
+  access_key_id: "YOUR_ALIYUN_ACCESS_KEY_ID"
+  secret_access_key: "YOUR_ALIYUN_SECRET_ACCESS_KEY"
+  bucket_name: "your-aliyun-oss-bucket"
+  use_ssl: true
+
 rabbitmq:
   url: "amqp://guest:guest@rabbitmq:5672/"
 

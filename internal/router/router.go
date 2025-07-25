@@ -5,15 +5,14 @@ import (
 
 	_ "github.com/3Eeeecho/go-clouddisk/docs"
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
-	"github.com/3Eeeecho/go-clouddisk/internal/database"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
 	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
-	"github.com/minio/minio-go/v7"
 	ginSwagger "github.com/swaggo/gin-swagger"
 	"github.com/swaggo/gin-swagger/swaggerFiles"
 	"gorm.io/gorm"
@@ -21,15 +20,24 @@ import (
 
 // RouterConfig 包含初始化路由所需的所有依赖
 type RouterConfig struct {
-	DB     *gorm.DB
-	Redis  *redis.Client
-	Minio  *minio.Client
-	AppCfg *config.Config
+	db                 *gorm.DB
+	redisClient        *redis.Client
+	fileStorageService storage.StorageService
+	cfg                *config.Config
 }
 
-func InitRouter(cfg *config.Config) *gin.Engine {
+func NewRouterConfig(db *gorm.DB, redisClient *redis.Client, fileStorageService storage.StorageService, cfg *config.Config) *RouterConfig {
+	return &RouterConfig{
+		db:                 db,
+		redisClient:        redisClient,
+		fileStorageService: fileStorageService,
+		cfg:                cfg,
+	}
+}
+
+func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 	// 设置 Gin 模式，开发环境为 DebugMode，生产环境为 ReleaseMode
-	gin.SetMode(gin.DebugMode) // 或者根据 cfg.AppCfg.Server.Env 来设置
+	gin.SetMode(gin.DebugMode) // 或者根据 routerCfg.cfg.AppCfg.Server.Env 来设置
 
 	router := gin.Default() // 使用默认的 Gin 引擎，包含 Logger 和 Recovery 中间件
 
@@ -49,37 +57,39 @@ func InitRouter(cfg *config.Config) *gin.Engine {
 		// 认证相关路由 (无需认证)
 		authGroup := v1.Group("/auth")
 		{
-			// 传递 database.DB 和 cfg
-			authGroup.POST("/register", handlers.Register(database.DB, cfg)) // <-- 使用 database.DB
-			authGroup.POST("/login", handlers.Login(database.DB, cfg))       // <-- 使用 database.DB
-			authGroup.POST("/refresh", handlers.RefreshToken(cfg))
+			authGroup.POST("/register", handlers.Register(routerCfg.db, routerCfg.cfg))
+			authGroup.POST("/login", handlers.Login(routerCfg.db, routerCfg.cfg))
+			authGroup.POST("/refresh", handlers.RefreshToken(routerCfg.cfg))
 		}
 
 		// 需要认证的路由组
 		authenticated := v1.Group("/")
-		authenticated.Use(middlewares.AuthMiddleware(cfg))
+		authenticated.Use(middlewares.AuthMiddleware(routerCfg.cfg))
 
 		// 用户相关路由
 		userGroup := authenticated.Group("/users")
 		{
-			userGroup.GET("/info", handlers.GetUserInfo()) // GetUserInfo 不直接依赖 DB，但可以获取用户ID
+			userRepo := repositories.NewUserRepository(routerCfg.db)
+			userService := services.NewUserService(userRepo)
+
+			userGroup.GET("/me", handlers.GetUserProfile(userService))
 		}
 
 		// 文件相关路由
 		fileGroup := authenticated.Group("/files")
 		{
 
-			fileRepo := repositories.NewFileRepository(database.DB)
-			userRepo := repositories.NewUserRepository(database.DB)
-			fileService := services.NewFileService(fileRepo, userRepo, cfg, database.DB, database.MinioClientGlobal)
-			// 传递 fileService而不是db
-			fileGroup.GET("/", handlers.ListUserFiles(fileService, cfg))
-			fileGroup.POST("/upload", handlers.UploadFile(fileService, cfg))
-			fileGroup.POST("/folder", handlers.CreateFolder(fileService, cfg))
-			fileGroup.GET("/download/:file_id", handlers.DownloadFile(fileService, cfg))
-			fileGroup.GET("/download/folder/:id", handlers.DownloadFolder(fileService, cfg))
-			fileGroup.DELETE("/softdelete/:file_id", handlers.SoftDeleteFile(fileService, cfg))
-			fileGroup.DELETE("/permanentdelete/:file_id", handlers.PermanentDeleteFile(fileService, cfg))
+			fileRepo := repositories.NewFileRepository(routerCfg.db)
+			userRepo := repositories.NewUserRepository(routerCfg.db)
+			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService)
+
+			fileGroup.GET("/", handlers.ListUserFiles(fileService, routerCfg.cfg))
+			fileGroup.POST("/upload", handlers.UploadFile(fileService, routerCfg.cfg))
+			fileGroup.POST("/folder", handlers.CreateFolder(fileService, routerCfg.cfg))
+			fileGroup.GET("/download/:file_id", handlers.DownloadFile(fileService, routerCfg.cfg))
+			fileGroup.GET("/download/folder/:id", handlers.DownloadFolder(fileService, routerCfg.cfg))
+			fileGroup.DELETE("/softdelete/:file_id", handlers.SoftDeleteFile(fileService, routerCfg.cfg))
+			fileGroup.DELETE("/permanentdelete/:file_id", handlers.PermanentDeleteFile(fileService, routerCfg.cfg))
 			fileGroup.GET("/recyclebin", handlers.ListRecycleBinFiles(fileService))
 			fileGroup.PUT("/restore/:file_id", handlers.RestoreFile(fileService))
 			fileGroup.PUT("/rename/:id", handlers.RenameFile(fileService))

@@ -117,15 +117,3 @@ func RefreshToken(cfg *config.Config) gin.HandlerFunc {
 		xerr.Success(c, http.StatusOK, "Refresh token endpoint - To be implemented", nil)
 	}
 }
-
-// @Summary 获取用户信息
-// @Description 获取当前登录用户信息
-// @Tags 用户
-// @Produce json
-// @Success 200 {object} map[string]interface{} "用户信息"
-// @Router /api/v1/users/info [get]
-func GetUserInfo() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		xerr.Success(c, http.StatusOK, "Get user info endpoint - To be implemented", nil)
-	}
-}
