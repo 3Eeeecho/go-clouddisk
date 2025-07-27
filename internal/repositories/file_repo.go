@@ -38,8 +38,6 @@ type fileRepository struct {
 	db *gorm.DB
 }
 
-var _ FileRepository = (*fileRepository)(nil)
-
 // NewFileRepository 创建一个新的 FileRepository 实例
 func NewFileRepository(db *gorm.DB) FileRepository {
 	return &fileRepository{db: db}

@@ -36,6 +36,9 @@ type FileService interface {
 	RestoreFile(userID uint64, fileID uint64) error                                    // 从回收站恢复文件
 	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error) //修改文件名
 	MoveFile(userID uint64, fileID uint64, parentFolderID *uint64) (*models.File, error)
+
+	//helpers
+	GetFileContentReader(ctx context.Context, file models.File) (io.ReadCloser, error)
 }
 
 type fileService struct {
@@ -479,7 +482,7 @@ func (s *fileService) DownloadFolder(ctx context.Context, userID uint64, folderI
 			// 使用一个匿名函数来封装文件读取和写入 ZIP 的逻辑，确保 defer 能够及时执行
 			func() {
 				// 获取文件内容读取器，并传入 goroutine 的上下文
-				fileContentReader, getErr := s.getFileContentReader(ctx, fileRecord) // <--- 传入 ctx
+				fileContentReader, getErr := s.GetFileContentReader(ctx, fileRecord) // <--- 传入 ctx
 				if getErr != nil {
 					logger.Error("DownloadFolder: 获取文件内容读取器失败",
 						zap.Uint64("fileID", fileRecord.ID),

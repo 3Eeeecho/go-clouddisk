@@ -13,8 +13,8 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
+	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"github.com/swaggo/gin-swagger/swaggerFiles"
 	"gorm.io/gorm"
 )
 
@@ -94,6 +94,24 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 			fileGroup.PUT("/restore/:file_id", handlers.RestoreFile(fileService))
 			fileGroup.PUT("/rename/:id", handlers.RenameFile(fileService))
 			fileGroup.PUT("/move", handlers.MoveFile(fileService))
+		}
+
+		// 分享相关路由
+		shareGroup := authenticated.Group("/shares")
+		{
+			shareRepo := repositories.NewShareRepository(routerCfg.db)
+			fileRepo := repositories.NewFileRepository(routerCfg.db)
+			userRepo := repositories.NewUserRepository(routerCfg.db)
+			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService)
+			shareService := services.NewShareService(shareRepo, fileRepo, fileService, routerCfg.cfg)
+
+			shareGroup.GET("/:share_uuid/details", handlers.GetShareDetails(shareService, routerCfg.cfg))
+			shareGroup.POST("/:share_uuid/verify", handlers.VerifySharePassword(shareService, routerCfg.cfg))
+			shareGroup.GET("/:share_uuid/download", handlers.DownloadSharedContent(shareService, routerCfg.cfg))
+
+			shareGroup.POST("/", handlers.CreateShare(shareService, routerCfg.cfg))
+			shareGroup.GET("/my", handlers.ListUserShares(shareService, routerCfg.cfg))
+			shareGroup.DELETE("/:share_id", handlers.RevokeShare(shareService, routerCfg.cfg))
 		}
 	}
 

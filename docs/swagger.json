@@ -32,22 +32,19 @@
                     "200": {
                         "description": "登录成功，返回token",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "401": {
                         "description": "用户名或密码错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -67,8 +64,7 @@
                     "200": {
                         "description": "刷新成功",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -102,22 +98,19 @@
                     "200": {
                         "description": "注册成功",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "409": {
                         "description": "用户名或邮箱已存在",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -125,6 +118,11 @@
         },
         "/api/v1/files/": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "获取当前用户指定文件夹下的文件和文件夹列表",
                 "produces": [
                     "application/json"
@@ -145,15 +143,59 @@
                     "200": {
                         "description": "文件列表",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/files/download/folder/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "下载指定ID的文件夹，打包为ZIP格式",
+                "produces": [
+                    "application/zip"
+                ],
+                "tags": [
+                    "文件"
+                ],
+                "summary": "下载文件夹",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "文件夹ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "文件夹ZIP包",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "400": {
+                        "description": "参数错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "文件夹未找到",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -161,6 +203,11 @@
         },
         "/api/v1/files/download/{file_id}": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "下载指定ID的文件",
                 "produces": [
                     "application/octet-stream"
@@ -188,8 +235,7 @@
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -197,6 +243,11 @@
         },
         "/api/v1/files/folder": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "在指定目录下创建文件夹",
                 "consumes": [
                     "application/json"
@@ -223,15 +274,82 @@
                     "201": {
                         "description": "创建成功",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/files/move": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "移动指定文件或文件夹到新的父文件夹下",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "文件"
+                ],
+                "summary": "移动文件/文件夹",
+                "parameters": [
+                    {
+                        "description": "移动文件请求体",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.MoveFileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "成功移动后的文件/文件夹信息",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "参数错误，例如文件ID或目标父文件夹ID无效，或目标不是文件夹",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "权限不足，例如文件不属于当前用户，或无权访问目标文件夹",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "文件或目标文件夹未找到",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "目标位置已存在同名文件/文件夹",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -239,6 +357,11 @@
         },
         "/api/v1/files/permanentdelete/{file_id}": {
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "将文件或文件夹彻底删除",
                 "tags": [
                     "文件"
@@ -257,15 +380,154 @@
                     "200": {
                         "description": "删除成功",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/files/recyclebin": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "列出用户回收站中的所有文件",
+                "tags": [
+                    "文件"
+                ],
+                "summary": "列出回收站中的文件",
+                "responses": {
+                    "200": {
+                        "description": "获取成功",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/files/rename/{id}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "重命名指定的文件或文件夹",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "文件"
+                ],
+                "summary": "重命名文件/文件夹",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "文件ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "重命名信息",
+                        "name": "data",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.RenameFileRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "重命名成功",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "参数错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "权限不足",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "文件未找到",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/files/restore/{file_id}": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "从回收站恢复文件或文件夹到原位置",
+                "tags": [
+                    "文件"
+                ],
+                "summary": "恢复文件/文件夹",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "文件ID",
+                        "name": "file_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "恢复成功",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "参数错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "权限不足",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "原位置已存在同名文件",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -273,6 +535,11 @@
         },
         "/api/v1/files/softdelete/{file_id}": {
             "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "将文件或文件夹移动到回收站",
                 "tags": [
                     "文件"
@@ -291,15 +558,13 @@
                     "200": {
                         "description": "删除成功",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -307,6 +572,11 @@
         },
         "/api/v1/files/upload": {
             "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
                 "description": "上传文件到指定文件夹",
                 "consumes": [
                     "multipart/form-data"
@@ -337,36 +607,436 @@
                     "201": {
                         "description": "上传成功",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     },
                     "400": {
                         "description": "参数错误",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
             }
         },
-        "/api/v1/users/info": {
-            "get": {
-                "description": "获取当前登录用户信息",
+        "/api/v1/shares": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "为指定文件或文件夹创建可分享链接，可设置密码和有效期",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "用户"
+                    "分享"
                 ],
-                "summary": "获取用户信息",
+                "summary": "创建分享链接",
+                "parameters": [
+                    {
+                        "description": "分享链接信息",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.CreateShareRequest"
+                        }
+                    }
+                ],
                 "responses": {
                     "200": {
-                        "description": "用户信息",
+                        "description": "分享链接创建成功",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数无效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未授权",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "无权操作或文件状态异常",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "409": {
+                        "description": "文件已存在有效分享链接",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/shares/my": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "列出当前用户创建的所有有效分享链接",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "分享"
+                ],
+                "summary": "列出用户创建的分享链接",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 1,
+                        "description": "页码，默认为1",
+                        "name": "page",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 10,
+                        "description": "每页数量，默认为10",
+                        "name": "pageSize",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "分享链接列表",
                         "schema": {
                             "type": "object",
-                            "additionalProperties": true
+                            "properties": {
+                                "data": {
+                                    "type": "array",
+                                    "items": {
+                                        "$ref": "#/definitions/xerr.Response"
+                                    }
+                                },
+                                "total": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数无效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未授权",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/shares/{share_id}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "根据分享 ID 撤销用户创建的分享链接",
+                "tags": [
+                    "分享"
+                ],
+                "summary": "撤销分享链接",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "分享链接 ID",
+                        "name": "share_id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "分享链接撤销成功"
+                    },
+                    "400": {
+                        "description": "请求参数无效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未授权",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "无权操作或链接已失效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分享链接不存在",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/user/me": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "检索已认证用户的资料详情。",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "User"
+                ],
+                "summary": "获取当前用户资料",
+                "responses": {
+                    "200": {
+                        "description": "用户资料检索成功",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "401": {
+                        "description": "未授权",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "用户未找到",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/share/{share_uuid}/details": {
+            "get": {
+                "description": "根据分享 UUID 获取分享链接的详细信息（不包括文件内容），用于展示给下载者",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "分享"
+                ],
+                "summary": "获取分享链接详情",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "分享链接 UUID",
+                        "name": "share_uuid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "分享链接详情",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数无效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "分享链接需要密码",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分享链接不存在或已失效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/share/{share_uuid}/download": {
+            "get": {
+                "description": "根据分享 UUID 下载文件或文件夹（如果为文件夹则打包为 ZIP）",
+                "produces": [
+                    "application/octet-stream"
+                ],
+                "tags": [
+                    "分享"
+                ],
+                "summary": "下载分享内容",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "分享链接 UUID",
+                        "name": "share_uuid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "分享密码（如果需要）",
+                        "name": "password",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "文件/文件夹下载成功",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数无效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "分享链接需要密码或密码不正确",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分享链接不存在或已失效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    }
+                }
+            }
+        },
+        "/share/{share_uuid}/verify": {
+            "post": {
+                "description": "验证分享链接的访问密码",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "分享"
+                ],
+                "summary": "验证分享链接密码",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "分享链接 UUID",
+                        "name": "share_uuid",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "密码",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ShareCheckPasswordRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "密码验证成功",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "请求参数无效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "403": {
+                        "description": "密码不正确或链接已过期",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "404": {
+                        "description": "分享链接不存在或已失效",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
+                        }
+                    },
+                    "500": {
+                        "description": "内部服务器错误",
+                        "schema": {
+                            "$ref": "#/definitions/xerr.Response"
                         }
                     }
                 }
@@ -389,6 +1059,24 @@
                 }
             }
         },
+        "handlers.CreateShareRequest": {
+            "type": "object",
+            "required": [
+                "file_id"
+            ],
+            "properties": {
+                "expires_in_minutes": {
+                    "description": "以分钟为单位",
+                    "type": "integer"
+                },
+                "file_id": {
+                    "type": "integer"
+                },
+                "password": {
+                    "type": "string"
+                }
+            }
+        },
         "handlers.LoginRequest": {
             "type": "object",
             "required": [
@@ -402,6 +1090,22 @@
                 },
                 "password": {
                     "type": "string"
+                }
+            }
+        },
+        "handlers.MoveFileRequest": {
+            "type": "object",
+            "required": [
+                "file_id"
+            ],
+            "properties": {
+                "file_id": {
+                    "description": "要移动的文件或文件夹的ID",
+                    "type": "integer"
+                },
+                "target_parent_folder_id": {
+                    "description": "目标父文件夹的ID，nil表示移动到根目录",
+                    "type": "integer"
                 }
             }
         },
@@ -425,6 +1129,44 @@
                     "type": "string",
                     "maxLength": 64,
                     "minLength": 3
+                }
+            }
+        },
+        "handlers.RenameFileRequest": {
+            "type": "object",
+            "required": [
+                "new_file_name"
+            ],
+            "properties": {
+                "new_file_name": {
+                    "type": "string"
+                }
+            }
+        },
+        "handlers.ShareCheckPasswordRequest": {
+            "type": "object",
+            "required": [
+                "password"
+            ],
+            "properties": {
+                "password": {
+                    "type": "string"
+                }
+            }
+        },
+        "xerr.Response": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "description": "业务状态码",
+                    "type": "integer"
+                },
+                "data": {
+                    "description": "响应数据"
+                },
+                "message": {
+                    "description": "消息",
+                    "type": "string"
                 }
             }
         }

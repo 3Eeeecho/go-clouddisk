@@ -248,11 +248,11 @@ func (s *fileService) getRelativePathInZip(rootFolder *models.File, fileRecord *
 	return zipRootPrefix + relativePath
 }
 
-// getFileContentReader 是一个辅助函数，用于根据存储类型获取文件内容 Reader
+// GetFileContentReader 是一个辅助函数，用于根据存储类型获取文件内容 Reader
 // 这个函数与 DownloadFile 逻辑类似，但返回 io.ReadCloser
-func (s *fileService) getFileContentReader(ctx context.Context, file models.File) (io.ReadCloser, error) { // <--- 增加 ctx 参数
+func (s *fileService) GetFileContentReader(ctx context.Context, file models.File) (io.ReadCloser, error) {
 	if file.OssKey == nil || *file.OssKey == "" {
-		logger.Error("getFileContentReader: File record has no OssKey", zap.Uint64("fileID", file.ID))
+		logger.Error("GetFileContentReader: File record has no OssKey", zap.Uint64("fileID", file.ID))
 		return nil, errors.New("文件记录缺少存储键(OssKey)")
 	}
 
@@ -272,11 +272,11 @@ func (s *fileService) getFileContentReader(ctx context.Context, file models.File
 		// 	// 七牛云通常不直接通过桶名访问，而是通过绑定的域名，但为了统一接口，此处仍保留
 		// 	bucketName = s.cfg.QiniuKodo.BucketName
 		default:
-			logger.Error("getFileContentReader: Unsupported default storage type for getting bucket name",
+			logger.Error("GetFileContentReader: Unsupported default storage type for getting bucket name",
 				zap.String("storageType", s.cfg.Storage.Type))
 			return nil, errors.New("不支持的存储类型配置，无法获取桶名")
 		}
-		logger.Warn("getFileContentReader: OssBucket is missing in file record, using default bucket name",
+		logger.Warn("GetFileContentReader: OssBucket is missing in file record, using default bucket name",
 			zap.Uint64("fileID", file.ID), zap.String("defaultBucket", bucketName))
 	}
 
@@ -284,25 +284,25 @@ func (s *fileService) getFileContentReader(ctx context.Context, file models.File
 	case "local":
 		// 如果你的 FileService 确实支持本地存储，需要确保相关配置 s.cfg.Storage.LocalBasePath 存在
 		if s.cfg.Storage.LocalBasePath == "" {
-			logger.Error("getFileContentReader: Local storage base path not configured", zap.String("type", s.cfg.Storage.Type))
+			logger.Error("GetFileContentReader: Local storage base path not configured", zap.String("type", s.cfg.Storage.Type))
 			return nil, errors.New("本地存储路径未配置")
 		}
 		localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, *file.OssKey)
-		logger.Info("getFileContentReader: Opening local physical file", zap.String("path", localFilePath))
+		logger.Info("GetFileContentReader: Opening local physical file", zap.String("path", localFilePath))
 
 		f, err := os.Open(localFilePath)
 		if err != nil {
 			if os.IsNotExist(err) {
-				logger.Warn("getFileContentReader: Physical file not found on local disk",
+				logger.Warn("GetFileContentReader: Physical file not found on local disk",
 					zap.Uint64("fileID", file.ID), zap.String("path", localFilePath), zap.Error(err))
 				return nil, errors.New("物理文件在本地磁盘未找到")
 			}
-			logger.Error("getFileContentReader: Failed to open local file", zap.String("path", localFilePath), zap.Error(err))
+			logger.Error("GetFileContentReader: Failed to open local file", zap.String("path", localFilePath), zap.Error(err))
 			return nil, fmt.Errorf("打开本地文件失败 %s: %w", localFilePath, err)
 		}
 		return f, nil
 	case "minio", "aliyun_oss", "qiniu_kodo": // <--- 将所有云存储类型统一处理
-		logger.Info("getFileContentReader: Attempting to get object from cloud storage",
+		logger.Info("GetFileContentReader: Attempting to get object from cloud storage",
 			zap.String("storageType", s.cfg.Storage.Type),
 			zap.String("bucket", bucketName),
 			zap.String("ossKey", *file.OssKey))
@@ -315,12 +315,12 @@ func (s *fileService) getFileContentReader(ctx context.Context, file models.File
 			if strings.Contains(err.Error(), "key does not exist") ||
 				strings.Contains(err.Error(), "NoSuchKey") ||
 				strings.Contains(err.Error(), "not found") { // 适用于 MinIO 和部分 S3 兼容服务
-				logger.Warn("getFileContentReader: Physical file not found in cloud storage",
+				logger.Warn("GetFileContentReader: Physical file not found in cloud storage",
 					zap.Uint64("fileID", file.ID), zap.String("ossKey", *file.OssKey), zap.Error(err))
 				return nil, errors.New("物理文件在云存储中未找到")
 			}
 
-			logger.Error("getFileContentReader: Failed to get object from cloud storage",
+			logger.Error("GetFileContentReader: Failed to get object from cloud storage",
 				zap.String("storageType", s.cfg.Storage.Type),
 				zap.String("bucket", bucketName),
 				zap.String("ossKey", *file.OssKey),
@@ -330,7 +330,7 @@ func (s *fileService) getFileContentReader(ctx context.Context, file models.File
 		// 从 GetObjectResult 中提取 Reader
 		return objResult.Reader, nil // <--- 返回 objResult.Reader
 	default:
-		logger.Error("getFileContentReader: Unsupported storage type configured", zap.String("type", s.cfg.Storage.Type))
+		logger.Error("GetFileContentReader: Unsupported storage type configured", zap.String("type", s.cfg.Storage.Type))
 		return nil, errors.New("配置了不支持的存储类型")
 	}
 }

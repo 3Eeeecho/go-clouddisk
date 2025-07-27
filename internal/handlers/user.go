@@ -20,10 +20,10 @@ import (
 // @Accept json
 // @Produce json
 // @Security BearerAuth
-// @Success 200 {object} models.User "用户资料检索成功"
-// @Failure 401 {object} map[string]string "未授权"
-// @Failure 404 {object} map[string]string "用户未找到"
-// @Failure 500 {object} map[string]string "内部服务器错误"
+// @Success 200 {object} xerr.Response "用户资料检索成功"
+// @Failure 401 {object} xerr.Response "未授权"
+// @Failure 404 {object} xerr.Response "用户未找到"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/user/me [get]
 func GetUserProfile(userService services.UserService) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -60,11 +60,11 @@ func GetUserProfile(userService services.UserService) gin.HandlerFunc {
 // @Produce json
 // @Security BearerAuth
 // @Param id path int true "用户ID"
-// @Success 200 {object} models.User "用户资料检索成功"
-// @Failure 401 {object} map[string]string "未授权"
-// @Failure 403 {object} map[string]string "禁止访问"
-// @Failure 404 {object} map[string]string "用户未找到"
-// @Failure 500 {object} map[string]string "内部服务器错误"
+// @Success 200 {object} xerr.Response "用户资料检索成功"
+// @Failure 401 {object} xerr.Response "未授权"
+// @Failure 403 {object} xerr.Response "禁止访问"
+// @Failure 404 {object} xerr.Response "用户未找到"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/user/{id} [get]
 func (h *userHandler) GetUserProfileByID(c *gin.Context) {
 	// 获取当前用户ID（如果需要进行授权检查）
@@ -78,7 +78,7 @@ func (h *userHandler) GetUserProfileByID(c *gin.Context) {
 	// 通常在这里添加授权检查，
 	// 例如，判断当前用户是否为管理员。
 	// 为了简化，目前假设可以直接访问，但在生产环境中，请检查 isAdmin。
-	// if !currentUserID.(models.User).IsAdmin { // 这需要在Context中存储用户对象，而不仅仅是ID
+	// if !currentUserID.(xerr.Response).IsAdmin { // 这需要在Context中存储用户对象，而不仅仅是ID
 	//    c.JSON(http.StatusForbidden, gin.H{"error": "禁止访问"})
 	//    return
 	// }

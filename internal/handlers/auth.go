@@ -29,9 +29,9 @@ type LoginRequest struct {
 // @Accept json
 // @Produce json
 // @Param data body RegisterRequest true "注册信息"
-// @Success 200 {object} map[string]interface{} "注册成功"
-// @Failure 400 {object} map[string]interface{} "参数错误"
-// @Failure 409 {object} map[string]interface{} "用户名或邮箱已存在"
+// @Success 200 {object} xerr.Response "注册成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 409 {object} xerr.Response "用户名或邮箱已存在"
 // @Router /api/v1/auth/register [post]
 func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
@@ -74,9 +74,9 @@ func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 // @Accept json
 // @Produce json
 // @Param data body LoginRequest true "登录信息"
-// @Success 200 {object} map[string]interface{} "登录成功，返回token"
-// @Failure 400 {object} map[string]interface{} "参数错误"
-// @Failure 401 {object} map[string]interface{} "用户名或密码错误"
+// @Success 200 {object} xerr.Response "登录成功，返回token"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 401 {object} xerr.Response "用户名或密码错误"
 // @Router /api/v1/auth/login [post]
 func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
@@ -110,7 +110,7 @@ func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 // @Description 刷新JWT Token
 // @Tags 用户认证
 // @Produce json
-// @Success 200 {object} map[string]interface{} "刷新成功"
+// @Success 200 {object} xerr.Response "刷新成功"
 // @Router /api/v1/auth/refresh [post]
 func RefreshToken(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {

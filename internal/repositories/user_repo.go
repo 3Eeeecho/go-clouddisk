@@ -22,8 +22,6 @@ type userRepository struct {
 	db *gorm.DB
 }
 
-var _ UserRepository = (*userRepository)(nil)
-
 // NewUserRepository 创建一个新的 UserRepository 实例
 func NewUserRepository(db *gorm.DB) UserRepository {
 	return &userRepository{db: db}

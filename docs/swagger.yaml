@@ -9,6 +9,18 @@ definitions:
     required:
     - folder_name
     type: object
+  handlers.CreateShareRequest:
+    properties:
+      expires_in_minutes:
+        description: 以分钟为单位
+        type: integer
+      file_id:
+        type: integer
+      password:
+        type: string
+    required:
+    - file_id
+    type: object
   handlers.LoginRequest:
     properties:
       identifier:
@@ -19,6 +31,17 @@ definitions:
     required:
     - identifier
     - password
+    type: object
+  handlers.MoveFileRequest:
+    properties:
+      file_id:
+        description: 要移动的文件或文件夹的ID
+        type: integer
+      target_parent_folder_id:
+        description: 目标父文件夹的ID，nil表示移动到根目录
+        type: integer
+    required:
+    - file_id
     type: object
   handlers.RegisterRequest:
     properties:
@@ -36,6 +59,31 @@ definitions:
     - email
     - password
     - username
+    type: object
+  handlers.RenameFileRequest:
+    properties:
+      new_file_name:
+        type: string
+    required:
+    - new_file_name
+    type: object
+  handlers.ShareCheckPasswordRequest:
+    properties:
+      password:
+        type: string
+    required:
+    - password
+    type: object
+  xerr.Response:
+    properties:
+      code:
+        description: 业务状态码
+        type: integer
+      data:
+        description: 响应数据
+      message:
+        description: 消息
+        type: string
     type: object
 info:
   contact: {}
@@ -58,18 +106,15 @@ paths:
         "200":
           description: 登录成功，返回token
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "401":
           description: 用户名或密码错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
       summary: 用户登录
       tags:
       - 用户认证
@@ -82,8 +127,7 @@ paths:
         "200":
           description: 刷新成功
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
       summary: 刷新Token
       tags:
       - 用户认证
@@ -105,18 +149,15 @@ paths:
         "200":
           description: 注册成功
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "409":
           description: 用户名或邮箱已存在
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
       summary: 用户注册
       tags:
       - 用户认证
@@ -134,13 +175,13 @@ paths:
         "200":
           description: 文件列表
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
       summary: 获取用户文件列表
       tags:
       - 文件
@@ -163,9 +204,39 @@ paths:
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
       summary: 下载文件
+      tags:
+      - 文件
+  /api/v1/files/download/folder/{id}:
+    get:
+      description: 下载指定ID的文件夹，打包为ZIP格式
+      parameters:
+      - description: 文件夹ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/zip
+      responses:
+        "200":
+          description: 文件夹ZIP包
+          schema:
+            type: file
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 文件夹未找到
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 下载文件夹
       tags:
       - 文件
   /api/v1/files/folder:
@@ -186,14 +257,58 @@ paths:
         "201":
           description: 创建成功
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
       summary: 创建文件夹
+      tags:
+      - 文件
+  /api/v1/files/move:
+    post:
+      consumes:
+      - application/json
+      description: 移动指定文件或文件夹到新的父文件夹下
+      parameters:
+      - description: 移动文件请求体
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.MoveFileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 成功移动后的文件/文件夹信息
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "400":
+          description: 参数错误，例如文件ID或目标父文件夹ID无效，或目标不是文件夹
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 权限不足，例如文件不属于当前用户，或无权访问目标文件夹
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 文件或目标文件夹未找到
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "409":
+          description: 目标位置已存在同名文件/文件夹
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 移动文件/文件夹
       tags:
       - 文件
   /api/v1/files/permanentdelete/{file_id}:
@@ -209,14 +324,103 @@ paths:
         "200":
           description: 删除成功
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
       summary: 彻底删除文件或文件夹（永久删除）
+      tags:
+      - 文件
+  /api/v1/files/recyclebin:
+    get:
+      description: 列出用户回收站中的所有文件
+      responses:
+        "200":
+          description: 获取成功
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 列出回收站中的文件
+      tags:
+      - 文件
+  /api/v1/files/rename/{id}:
+    put:
+      consumes:
+      - application/json
+      description: 重命名指定的文件或文件夹
+      parameters:
+      - description: 文件ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: 重命名信息
+        in: body
+        name: data
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.RenameFileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 重命名成功
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 文件未找到
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 重命名文件/文件夹
+      tags:
+      - 文件
+  /api/v1/files/restore/{file_id}:
+    post:
+      description: 从回收站恢复文件或文件夹到原位置
+      parameters:
+      - description: 文件ID
+        in: path
+        name: file_id
+        required: true
+        type: integer
+      responses:
+        "200":
+          description: 恢复成功
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "400":
+          description: 参数错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 权限不足
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "409":
+          description: 原位置已存在同名文件
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 恢复文件/文件夹
       tags:
       - 文件
   /api/v1/files/softdelete/{file_id}:
@@ -232,13 +436,13 @@ paths:
         "200":
           description: 删除成功
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
       summary: 删除文件或文件夹（软删除）
       tags:
       - 文件
@@ -263,28 +467,288 @@ paths:
         "201":
           description: 上传成功
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
         "400":
           description: 参数错误
           schema:
-            additionalProperties: true
-            type: object
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
       summary: 上传文件
       tags:
       - 文件
-  /api/v1/users/info:
-    get:
-      description: 获取当前登录用户信息
+  /api/v1/shares:
+    post:
+      consumes:
+      - application/json
+      description: 为指定文件或文件夹创建可分享链接，可设置密码和有效期
+      parameters:
+      - description: 分享链接信息
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.CreateShareRequest'
       produces:
       - application/json
       responses:
         "200":
-          description: 用户信息
+          description: 分享链接创建成功
           schema:
-            additionalProperties: true
-            type: object
-      summary: 获取用户信息
+            $ref: '#/definitions/xerr.Response'
+        "400":
+          description: 请求参数无效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "401":
+          description: 未授权
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 无权操作或文件状态异常
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "409":
+          description: 文件已存在有效分享链接
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 创建分享链接
       tags:
-      - 用户
+      - 分享
+  /api/v1/shares/{share_id}:
+    delete:
+      description: 根据分享 ID 撤销用户创建的分享链接
+      parameters:
+      - description: 分享链接 ID
+        in: path
+        name: share_id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: 分享链接撤销成功
+        "400":
+          description: 请求参数无效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "401":
+          description: 未授权
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 无权操作或链接已失效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 分享链接不存在
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 撤销分享链接
+      tags:
+      - 分享
+  /api/v1/shares/my:
+    get:
+      description: 列出当前用户创建的所有有效分享链接
+      parameters:
+      - default: 1
+        description: 页码，默认为1
+        in: query
+        name: page
+        type: integer
+      - default: 10
+        description: 每页数量，默认为10
+        in: query
+        name: pageSize
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 分享链接列表
+          schema:
+            properties:
+              data:
+                items:
+                  $ref: '#/definitions/xerr.Response'
+                type: array
+              total:
+                type: integer
+            type: object
+        "400":
+          description: 请求参数无效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "401":
+          description: 未授权
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 列出用户创建的分享链接
+      tags:
+      - 分享
+  /api/v1/user/me:
+    get:
+      consumes:
+      - application/json
+      description: 检索已认证用户的资料详情。
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 用户资料检索成功
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "401":
+          description: 未授权
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 用户未找到
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      security:
+      - BearerAuth: []
+      summary: 获取当前用户资料
+      tags:
+      - User
+  /share/{share_uuid}/details:
+    get:
+      description: 根据分享 UUID 获取分享链接的详细信息（不包括文件内容），用于展示给下载者
+      parameters:
+      - description: 分享链接 UUID
+        in: path
+        name: share_uuid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 分享链接详情
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "400":
+          description: 请求参数无效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 分享链接需要密码
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 分享链接不存在或已失效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      summary: 获取分享链接详情
+      tags:
+      - 分享
+  /share/{share_uuid}/download:
+    get:
+      description: 根据分享 UUID 下载文件或文件夹（如果为文件夹则打包为 ZIP）
+      parameters:
+      - description: 分享链接 UUID
+        in: path
+        name: share_uuid
+        required: true
+        type: string
+      - description: 分享密码（如果需要）
+        in: query
+        name: password
+        type: string
+      produces:
+      - application/octet-stream
+      responses:
+        "200":
+          description: 文件/文件夹下载成功
+          schema:
+            type: file
+        "400":
+          description: 请求参数无效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 分享链接需要密码或密码不正确
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 分享链接不存在或已失效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      summary: 下载分享内容
+      tags:
+      - 分享
+  /share/{share_uuid}/verify:
+    post:
+      consumes:
+      - application/json
+      description: 验证分享链接的访问密码
+      parameters:
+      - description: 分享链接 UUID
+        in: path
+        name: share_uuid
+        required: true
+        type: string
+      - description: 密码
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.ShareCheckPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: 密码验证成功
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: 请求参数无效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "403":
+          description: 密码不正确或链接已过期
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "404":
+          description: 分享链接不存在或已失效
+          schema:
+            $ref: '#/definitions/xerr.Response'
+        "500":
+          description: 内部服务器错误
+          schema:
+            $ref: '#/definitions/xerr.Response'
+      summary: 验证分享链接密码
+      tags:
+      - 分享
 swagger: "2.0"

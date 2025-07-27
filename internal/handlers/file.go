@@ -24,9 +24,10 @@ import (
 // @Description 获取当前用户指定文件夹下的文件和文件夹列表
 // @Tags 文件
 // @Produce json
+// @Security BearerAuth
 // @Param parent_id query int false "父文件夹ID"
-// @Success 200 {object} map[string]interface{} "文件列表"
-// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Success 200 {object} xerr.Response "文件列表"
+// @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/ [get]
 func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -66,10 +67,11 @@ func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.Han
 // @Tags 文件
 // @Accept multipart/form-data
 // @Produce json
+// @Security BearerAuth
 // @Param file formData file true "文件内容"
 // @Param parent_folder_id formData int false "父文件夹ID"
-// @Success 201 {object} map[string]interface{} "上传成功"
-// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Success 201 {object} xerr.Response "上传成功"
+// @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/upload [post]
 func UploadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -165,9 +167,10 @@ type CreateFolderRequest struct {
 // @Tags 文件
 // @Accept json
 // @Produce json
+// @Security BearerAuth
 // @Param data body CreateFolderRequest true "文件夹信息"
-// @Success 201 {object} map[string]interface{} "创建成功"
-// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Success 201 {object} xerr.Response "创建成功"
+// @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/folder [post]
 func CreateFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -212,9 +215,10 @@ func CreateFolder(fileService services.FileService, cfg *config.Config) gin.Hand
 // @Description 下载指定ID的文件
 // @Tags 文件
 // @Produce application/octet-stream
+// @Security BearerAuth
 // @Param file_id path int true "文件ID"
 // @Success 200 {file} file "文件内容"
-// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/download/{file_id} [get]
 func DownloadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -266,6 +270,16 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 	}
 }
 
+// @Summary 下载文件夹
+// @Description 下载指定ID的文件夹，打包为ZIP格式
+// @Tags 文件
+// @Produce application/zip
+// @Security BearerAuth
+// @Param id path int true "文件夹ID"
+// @Success 200 {file} file "文件夹ZIP包"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 404 {object} xerr.Response "文件夹未找到"
+// @Router /api/v1/files/download/folder/{id} [get]
 func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, exists := c.Get("userID") // 从 AuthMiddleware 获取 userID
@@ -331,9 +345,10 @@ func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.Ha
 // @Summary 删除文件或文件夹（软删除）
 // @Description 将文件或文件夹移动到回收站
 // @Tags 文件
+// @Security BearerAuth
 // @Param file_id path int true "文件ID"
-// @Success 200 {object} map[string]interface{} "删除成功"
-// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Success 200 {object} xerr.Response "删除成功"
+// @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/softdelete/{file_id} [delete]
 func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -368,9 +383,10 @@ func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.Ha
 // @Summary 彻底删除文件或文件夹（永久删除）
 // @Description 将文件或文件夹彻底删除
 // @Tags 文件
+// @Security BearerAuth
 // @Param file_id path int true "文件ID"
-// @Success 200 {object} map[string]interface{} "删除成功"
-// @Failure 400 {object} map[string]interface{} "参数错误"
+// @Success 200 {object} xerr.Response "删除成功"
+// @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/permanentdelete/{file_id} [delete]
 func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -411,9 +427,9 @@ func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) g
 // @Summary 列出回收站中的文件
 // @Description 列出用户回收站中的所有文件
 // @Tags 文件
-// @Param
-// @Success 200 {object} map[string]interface{} "获取成功"
-// @Failure 500 {object} map[string]interface{} "内部错误"
+// @Security BearerAuth
+// @Success 200 {object} xerr.Response "获取成功"
+// @Failure 500 {object} xerr.Response "内部错误"
 // @Router /api/v1/files/recyclebin [get]
 func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -432,6 +448,16 @@ func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
 	}
 }
 
+// @Summary 恢复文件/文件夹
+// @Description 从回收站恢复文件或文件夹到原位置
+// @Tags 文件
+// @Security BearerAuth
+// @Param file_id path int true "文件ID"
+// @Success 200 {object} xerr.Response "恢复成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 403 {object} xerr.Response "权限不足"
+// @Failure 409 {object} xerr.Response "原位置已存在同名文件"
+// @Router /api/v1/files/restore/{file_id} [post]
 func RestoreFile(fileService services.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := ginutils.GetUserIDFromContext(c)
@@ -477,8 +503,19 @@ type RenameFileRequest struct {
 	NewFileName string `json:"new_file_name" binding:"required"`
 }
 
-// RenameFile 处理文件/文件夹的改名请求
-// PUT /api/v1/files/rename/:id
+// @Summary 重命名文件/文件夹
+// @Description 重命名指定的文件或文件夹
+// @Tags 文件
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param id path int true "文件ID"
+// @Param data body RenameFileRequest true "重命名信息"
+// @Success 200 {object} xerr.Response "重命名成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 403 {object} xerr.Response "权限不足"
+// @Failure 404 {object} xerr.Response "文件未找到"
+// @Router /api/v1/files/rename/{id} [put]
 func RenameFile(fileService services.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fileIDStr := c.Param("id")
@@ -548,13 +585,14 @@ type MoveFileRequest struct {
 // @Tags 文件
 // @Accept json
 // @Produce json
+// @Security BearerAuth
 // @Param request body MoveFileRequest true "移动文件请求体"
-// @Success 200 {object} models.File "成功移动后的文件/文件夹信息"
-// @Failure 400 {object} map[string]interface{} "参数错误，例如文件ID或目标父文件夹ID无效，或目标不是文件夹"
-// @Failure 403 {object} map[string]interface{} "权限不足，例如文件不属于当前用户，或无权访问目标文件夹"
-// @Failure 404 {object} map[string]interface{} "文件或目标文件夹未找到"
-// @Failure 409 {object} map[string]interface{} "目标位置已存在同名文件/文件夹"
-// @Failure 500 {object} map[string]interface{} "内部服务器错误"
+// @Success 200 {object} xerr.Response "成功移动后的文件/文件夹信息"
+// @Failure 400 {object} xerr.Response "参数错误，例如文件ID或目标父文件夹ID无效，或目标不是文件夹"
+// @Failure 403 {object} xerr.Response "权限不足，例如文件不属于当前用户，或无权访问目标文件夹"
+// @Failure 404 {object} xerr.Response "文件或目标文件夹未找到"
+// @Failure 409 {object} xerr.Response "目标位置已存在同名文件/文件夹"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/files/move [post]
 func MoveFile(fileService services.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
