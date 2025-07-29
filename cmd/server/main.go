@@ -7,7 +7,6 @@ import (
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/router"
 	"github.com/3Eeeecho/go-clouddisk/internal/setup"
 	"go.uber.org/zap"
@@ -32,28 +31,11 @@ func main() {
 	defer setup.CloseMySQLDB() // 确保在 main 函数退出时关闭数据库连接
 
 	// 初始化 Redis 连接
-	// client := database.InitRedis(&config.AppConfig.Redis)
-	// defer database.CloseRedis(client)
+	setup.InitRedis(cfg)
+	defer setup.CloseRedis()
 
 	// 初始化 MinIO 客户端
-	var fileStorageService storage.StorageService
-	switch cfg.Storage.Type {
-	case "minio":
-		minioSvc, err := setup.InitMinIOStorage(cfg) // 调用新的 MinIO 初始化函数
-		if err != nil {
-			logger.Fatal("初始化 MinIO 存储服务失败", zap.Error(err))
-		}
-		fileStorageService = minioSvc
-	case "aliyun_oss":
-		aliyunSvc, err := setup.InitAliyunOSSStorage(cfg) // 调用新的阿里云 OSS 初始化函数
-		if err != nil {
-			logger.Fatal("初始化阿里云 OSS 存储服务失败", zap.Error(err))
-		}
-		fileStorageService = aliyunSvc
-	default:
-		logger.Fatal("未知的存储服务类型，请检查配置: " + cfg.Storage.Type)
-
-	}
+	fileStorageService := setup.InitStorage(cfg)
 
 	// 初始化Elasticsearch
 	// database.InitElasticsearchClient(&cfg.Elasticsearch)
@@ -61,7 +43,7 @@ func main() {
 
 	// 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig
-	routerCfg := router.NewRouterConfig(setup.DB, nil, fileStorageService, cfg)
+	routerCfg := router.NewRouterConfig(setup.DB, setup.RedisClientGlobal, fileStorageService, cfg)
 	r := router.InitRouter(routerCfg)
 
 	// 启动 HTTP 服务器

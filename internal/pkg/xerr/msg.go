@@ -12,4 +12,7 @@ var (
 	ErrNameConflict               = errors.New("a file or folder with the same name already exists in the target location")
 	ErrInvalidFileName            = errors.New("invalid file or folder name")
 	ErrDatabaseTransaction        = errors.New("database transaction failed")
+
+	// redis
+	ErrCacheMiss = errors.New("缓存未命中,key不存在")
 )

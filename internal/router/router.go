@@ -7,6 +7,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
 	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
@@ -79,9 +80,10 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		fileGroup := authenticated.Group("/files")
 		{
 
-			fileRepo := repositories.NewFileRepository(routerCfg.db)
+			cacheService := cache.NewRedisCache(routerCfg.redisClient)
+			fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
 			userRepo := repositories.NewUserRepository(routerCfg.db)
-			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService)
+			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
 
 			fileGroup.GET("/", handlers.ListUserFiles(fileService, routerCfg.cfg))
 			fileGroup.POST("/upload", handlers.UploadFile(fileService, routerCfg.cfg))
@@ -99,10 +101,11 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		// 分享相关路由
 		shareGroup := authenticated.Group("/shares")
 		{
+			cacheService := cache.NewRedisCache(routerCfg.redisClient)
 			shareRepo := repositories.NewShareRepository(routerCfg.db)
-			fileRepo := repositories.NewFileRepository(routerCfg.db)
+			fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
 			userRepo := repositories.NewUserRepository(routerCfg.db)
-			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService)
+			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
 			shareService := services.NewShareService(shareRepo, fileRepo, fileService, routerCfg.cfg)
 
 			shareGroup.GET("/:share_uuid/details", handlers.GetShareDetails(shareService, routerCfg.cfg))

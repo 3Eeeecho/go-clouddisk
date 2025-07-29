@@ -14,6 +14,7 @@ import (
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
@@ -47,18 +48,20 @@ type fileService struct {
 	cfg                *config.Config
 	db                 *gorm.DB
 	fileStorageService storage.StorageService
+	cacheService       *cache.RedisCache
 }
 
 var _ FileService = (*fileService)(nil)
 
 // NewFileService 创建一个新的文件服务实例
-func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB, fileStorageService storage.StorageService) FileService {
+func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.UserRepository, cfg *config.Config, db *gorm.DB, fileStorageService storage.StorageService, cacheService *cache.RedisCache) FileService {
 	return &fileService{
 		fileRepo:           fileRepo,
 		userRepo:           userRepo,
 		cfg:                cfg,
 		db:                 db,
 		fileStorageService: fileStorageService,
+		cacheService:       cacheService,
 	}
 }
 

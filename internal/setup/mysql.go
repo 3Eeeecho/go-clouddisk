@@ -29,7 +29,7 @@ func InitMySQL(cfg *config.MySQLConfig) {
 	sqlDB.SetMaxOpenConns(100) // 最大打开连接数
 	// sqlDB.SetConnMaxLifetime(time.Hour) // 连接最大复用时间
 
-	logger.Info("MySQL database connected successfully!")
+	logger.Info("成功连接MySQL数据库!")
 
 	// 自动迁移数据库表结构
 	AutoMigrate()

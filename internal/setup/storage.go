@@ -80,3 +80,24 @@ func InitAliyunOSSStorage(cfg *config.Config) (storage.StorageService, error) {
 
 	return aliyunSvc, nil
 }
+
+func InitStorage(cfg *config.Config) storage.StorageService {
+	var fileStorageService storage.StorageService
+	switch cfg.Storage.Type {
+	case "minio":
+		minioSvc, err := InitMinIOStorage(cfg) // 调用新的 MinIO 初始化函数
+		if err != nil {
+			logger.Fatal("初始化 MinIO 存储服务失败", zap.Error(err))
+		}
+		fileStorageService = minioSvc
+	case "aliyun_oss":
+		aliyunSvc, err := InitAliyunOSSStorage(cfg) // 调用新的阿里云 OSS 初始化函数
+		if err != nil {
+			logger.Fatal("初始化阿里云 OSS 存储服务失败", zap.Error(err))
+		}
+		fileStorageService = aliyunSvc
+	default:
+		logger.Fatal("未知的存储服务类型，请检查配置: " + cfg.Storage.Type)
+	}
+	return fileStorageService
+}
