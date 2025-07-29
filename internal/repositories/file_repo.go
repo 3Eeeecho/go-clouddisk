@@ -84,12 +84,12 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	}
 
 	// 缓存未命中或获取失败，从数据库中加载
-	err = r.db.First(&file, id).Error
+	err = r.db.Unscoped().First(&file, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 如果数据库中也不存在，缓存一个空值，防止缓存穿透
 			r.cache.Set(ctx, cacheKey, nil, 1*time.Minute)
-			return nil, nil // 文件未找到
+			return nil, err // 文件未找到
 		}
 		return nil, fmt.Errorf("从数据库查询文件失败: %w", err)
 	}
@@ -108,12 +108,12 @@ func (r *fileRepository) FindByUserIDAndParentFolderID(userID uint64, parentFold
 	var cacheKey string
 	var files []models.File
 	if parentFolderID == nil {
-		cacheKey = fmt.Sprintf("file:user:%d:folder:root", userID)
+		cacheKey = fmt.Sprintf("files:user:%d:folder:root", userID)
 	} else {
-		cacheKey = fmt.Sprintf("file:user:%d:folder:%d", userID, *parentFolderID)
+		cacheKey = fmt.Sprintf("files:user:%d:folder:%d", userID, *parentFolderID)
 	}
 
-	err := r.cache.Get(ctx, cacheKey, files)
+	err := r.cache.Get(ctx, cacheKey, &files)
 	if err == nil {
 		return files, nil
 	} else {
@@ -173,8 +173,8 @@ func (r *fileRepository) FindDeletedFilesByUserID(userID uint64) ([]models.File,
 	// 尝试从Redis缓存中获取
 	var files []models.File
 
-	cacheKey := fmt.Sprintf("file:deleted:user:%d:", userID)
-	err := r.cache.Get(ctx, cacheKey, files)
+	cacheKey := fmt.Sprintf("files:deleted:user:%d", userID)
+	err := r.cache.Get(ctx, cacheKey, &files)
 	if err == nil {
 		return files, nil
 	} else {
@@ -198,7 +198,7 @@ func (r *fileRepository) FindByUserID(userID uint64) ([]models.File, error) {
 	// 尝试从Redis缓存中获取
 	var files []models.File
 	cacheKey := fmt.Sprintf("file:user_id:%d", userID)
-	err := r.cache.Get(ctx, cacheKey, files)
+	err := r.cache.Get(ctx, cacheKey, &files)
 	if err == nil {
 		return files, nil
 	} else {
@@ -298,6 +298,7 @@ func (r *fileRepository) Update(file *models.File) error {
 		} else {
 			r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:%d", file.UserID, *file.ParentFolderID)) // 父目录列表
 		}
+		r.cache.Del(ctx, fmt.Sprintf("files:deleted:user:%d", file.UserID))
 	}
 	return err
 }
@@ -312,8 +313,12 @@ func (r *fileRepository) SoftDelete(id uint64) error {
 		return errors.New("文件不存在")
 	}
 
-	// GORM 的 Delete 方法在模型中包含 gorm.DeletedAt 时，默认执行软删除
-	err = r.db.Delete(&models.File{}, id).Error
+	err = r.db.Model(file).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
+			"status":     0,          // 设置 status 字段为 0
+		}).Error
 	if err != nil {
 		return fmt.Errorf("软删除文件失败: %w", err)
 	}

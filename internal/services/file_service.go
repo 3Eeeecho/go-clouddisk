@@ -305,7 +305,7 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 		UUID:           uuid.New().String(), // 文件夹也需要一个 UUID
 		UserID:         userID,
 		ParentFolderID: parentFolderID,
-		FileName:       folderName,
+		FileName:       finalFolderName,
 		Path:           parentPath,
 		IsFolder:       1,   // 1 表示文件夹
 		Size:           0,   // 文件夹大小为 0
@@ -549,14 +549,8 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 		return fmt.Errorf("failed to retrieve file: %w", err)
 	}
 
-	if file.UserID != userID {
-		logger.Warn("SoftDeleteFile: Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
-		return errors.New("access denied: file or folder does not belong to user")
-	}
-
-	// 检查是否已经是软删除状态
-	if file.Status == 0 {
-		return errors.New("file or folder is already soft-deleted")
+	if err = s.checkFile(file, userID); err != nil {
+		return err
 	}
 
 	// 获取所有需要删除的文件或文件夹及其所有子项
@@ -590,10 +584,7 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 		// 执行 GORM 的软删除操作，这将同时更新 status 字段为 0 和 deleted_at 字段为当前时间
 		// GORM 的 Delete 方法在模型有 DeletedAt 字段时会自动进行软删除。
 		// 手动设置 fileToUpdate.Status = 0，并让 GORM 的 Delete 自动处理 DeletedAt。
-		err = tx.Unscoped().Model(&models.File{}).Where("id = ?", fileToUpdate.ID).Updates(map[string]interface{}{
-			"status":     0,
-			"deleted_at": time.Now(),
-		}).Error
+		err = s.fileRepo.SoftDelete(fileToUpdate.ID)
 
 		if err != nil {
 			tx.Rollback()
@@ -731,7 +722,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 
 		// 无论是否删除物理文件，都删除数据库记录
 		// 使用 Unscoped() 绕过 GORM 的软删除，执行真正的 DELETE
-		err = tx.Unscoped().Delete(&models.File{}, fileToPermanentlyDelete.ID).Error
+		err = s.fileRepo.PermanentDelete(fileToPermanentlyDelete.ID)
 		if err != nil {
 			tx.Rollback()
 			logger.Error("PermanentDeleteFile: Failed to delete file record ID from DB via transaction", zap.Uint64("fileID", fileToPermanentlyDelete.ID), zap.Error(err))
@@ -781,7 +772,8 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 
 	// 3. 检查文件是否在回收站中
 	// 只有 deleted_at 不为空，且 status 为 0，才认为是回收站中的文件
-	if !rootFile.DeletedAt.Valid || rootFile.Status != 0 {
+	logger.Info("rootFile Debug", zap.Uint64("id", rootFile.ID), zap.Any("deleted_at", rootFile.DeletedAt), zap.Uint8("status", rootFile.Status))
+	if !rootFile.DeletedAt.Valid || rootFile.Status == 1 {
 		return errors.New("file or folder is not in the recycle bin")
 	}
 
@@ -845,7 +837,7 @@ func (s *fileService) RestoreFile(userID uint64, fileID uint64) error {
 		fileToUpdate.Status = 1
 		fileToUpdate.DeletedAt = gorm.DeletedAt{}
 
-		err = tx.Save(&fileToUpdate).Error
+		err = s.fileRepo.Update(&fileToUpdate)
 		if err != nil {
 			tx.Rollback()
 			logger.Error("RestoreFile: Failed to restore file record in DB transaction",
