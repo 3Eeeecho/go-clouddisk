@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"sort"
 	"strconv"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
+	"github.com/go-redis/redis/v8"
 	"github.com/go-viper/mapstructure/v2"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -79,8 +82,12 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	cacheKey := fmt.Sprintf("file:metadata:%d", id)
 
 	// 尝试从Redis缓存中获取
+	// 单文件缓存采用Hash结构
 	resultMap, err := r.cache.HGetAll(ctx, cacheKey)
 	if err == nil {
+		if _, ok := resultMap["__NOT_FOUND__"]; ok {
+			return nil, xerr.ErrParentFolderNotFound //  如果从缓存命中不存在标记，直接返回不存在错误
+		}
 		file, err := r.mapToFile(resultMap) // 辅助函数将 map[string]string 映射到 models.File
 		if err == nil {
 			return file, nil
@@ -96,7 +103,8 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 如果数据库中也不存在，缓存一个空值，防止缓存穿透
-			r.cache.Set(ctx, cacheKey, nil, 1*time.Minute)
+			r.cache.HSet(ctx, cacheKey, "__NOT_FOUND__", "1")
+			r.cache.Expire(ctx, cacheKey, 1*time.Minute)
 			return nil, err // 文件未找到
 		}
 		return nil, fmt.Errorf("从数据库查询文件失败: %w", err)
@@ -118,22 +126,36 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 // parentFolderID 可以为 nil，表示根目录
 func (r *fileRepository) FindByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error) {
 	ctx := context.Background()
+
 	// 尝试从Redis缓存中获取
-	var cacheKey string
+	var listCacheKey string
 	var files []models.File
 	if parentFolderID == nil {
-		cacheKey = fmt.Sprintf("files:user:%d:folder:root", userID)
+		listCacheKey = fmt.Sprintf("files:list:user:%d:folder:root", userID)
 	} else {
-		cacheKey = fmt.Sprintf("files:user:%d:folder:%d", userID, *parentFolderID)
+		listCacheKey = fmt.Sprintf("files:list:user:%d:folder:%d", userID, *parentFolderID)
 	}
 
-	err := r.cache.Get(ctx, cacheKey, &files)
+	files, err := r.getFilesFromCacheList(ctx, listCacheKey)
 	if err == nil {
+		// 缓存命中，并且数据已获取并反序列化
+		// 对获取到的文件列表进行 Go 语言内存排序 (模拟数据库的复合排序)
+		sort.Slice(files, func(i, j int) bool {
+			// 优先显示文件夹 (IsFolder=1在前)
+			if files[i].IsFolder != files[j].IsFolder {
+				return files[i].IsFolder > files[j].IsFolder // 1 > 0 => folder comes before file
+			}
+			// 其次按文件名排序
+			return files[i].FileName < files[j].FileName // ASC order
+		})
 		return files, nil
-	} else {
-		logger.Error("获取缓存数据发生错误", zap.Uint64("id", userID), zap.Error(err))
+	} else if !errors.Is(err, cache.ErrCacheMiss) { // 只有不是 ErrCacheMiss 才记录错误
+		logger.Error("FindByUserIDAndParentFolderID: Error getting file list from cache", zap.String("key", listCacheKey), zap.Error(err))
+		// 对于非缓存未命中错误，可以选择继续尝试从数据库获取或直接返回错误
+		// 这里选择继续从数据库获取作为兜底
 	}
 
+	var dbFiles []models.File
 	query := r.db.Where("user_id = ?", userID)
 
 	if parentFolderID == nil {
@@ -143,32 +165,39 @@ func (r *fileRepository) FindByUserIDAndParentFolderID(userID uint64, parentFold
 	}
 
 	// 优先显示文件夹，然后按文件名排序
-	err = query.Order("is_folder DESC, file_name ASC").Find(&files).Error
+	err = query.Order("is_folder DESC, file_name ASC").Find(&dbFiles).Error
 	if err != nil {
-		log.Printf("Error finding files for user %d in folder %v: %v", userID, parentFolderID, err)
-		return nil, err
+		logger.Error("Error finding files from DB", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.Error(err))
+		return nil, fmt.Errorf("查询文件列表失败: %w", err)
 	}
 
-	// 将从数据库中获取的数据存入 Redis 缓存
-	r.cache.Set(ctx, cacheKey, files, r.cacheTTL)
-
-	return files, nil
+	saveErr := r.saveFilesToCacheList(ctx, listCacheKey, dbFiles, func(file models.File) float64 {
+		return float64(file.CreatedAt.Unix())
+	})
+	if saveErr != nil {
+		logger.Error("FindByUserIDAndParentFolderID: Failed to save files to cache", zap.Error(saveErr))
+		// 这里的策略是：即使缓存失败，也返回从数据库查到的数据，不阻塞业务
+	}
+	return dbFiles, nil
 }
 
 // FindFileByMD5Hash 根据 MD5Hash 查找文件
 func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error) {
 	ctx := context.Background()
-
+	cacheKey := fmt.Sprintf("file:metadata:%s", md5Hash)
 	// 尝试从Redis缓存中获取
-	var file models.File
-	cacheKey := fmt.Sprintf("file:md5:%s", md5Hash)
-	err := r.cache.Get(ctx, cacheKey, &file)
+	resultMap, err := r.cache.HGetAll(ctx, cacheKey)
 	if err == nil {
-		return &file, nil
-	} else {
-		logger.Error("获取文件缓存数据发生错误", zap.String("md5", md5Hash), zap.Error(err))
+		file, err := r.mapToFile(resultMap) // 辅助函数将 map[string]string 映射到 models.File
+		if err == nil {
+			return file, nil
+		}
+		logger.Error("FindByID: Failed to map cached hash to models.File", zap.String("md5Hash", md5Hash), zap.Error(err))
+	} else if !errors.Is(err, cache.ErrCacheMiss) { // 只有不是 ErrCacheMiss 才记录错误
+		logger.Error("FindByID: Error getting file hash from cache", zap.String("md5Hash", md5Hash), zap.Error(err))
 	}
 
+	var file models.File
 	// 注意：这里我们可能需要查询的是那些非文件夹且状态正常的文件的 MD5Hash
 	err = r.db.Where("md5_hash = ? AND is_folder = 0 AND status = 1", md5Hash).First(&file).Error
 	if err != nil {
@@ -177,7 +206,13 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 	}
 
 	// 将从数据库中获取的数据存入 Redis 缓存
-	r.cache.Set(ctx, cacheKey, file, r.cacheTTL)
+	fileMap, err := r.fileToMap(&file) // 辅助函数将 models.File 映射到 map[string]any
+	if err != nil {
+		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.String("md5Hash", md5Hash), zap.Error(err))
+	} else {
+		r.cache.HMSet(ctx, cacheKey, fileMap)     // 使用封装好的 HMSet
+		r.cache.Expire(ctx, cacheKey, r.cacheTTL) // 使用封装好的 Expire
+	}
 
 	return &file, nil
 }
@@ -185,23 +220,44 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 func (r *fileRepository) FindDeletedFilesByUserID(userID uint64) ([]models.File, error) {
 	ctx := context.Background()
 	// 尝试从Redis缓存中获取
-	var files []models.File
+	listCacheKey := fmt.Sprintf("files:deleted:user:%d", userID)
 
-	cacheKey := fmt.Sprintf("files:deleted:user:%d", userID)
-	err := r.cache.Get(ctx, cacheKey, &files)
+	files, err := r.getFilesFromCacheList(ctx, listCacheKey)
 	if err == nil {
+		// 这里的排序通常是 DeletedAt DESC，ZRevRange 已经能保证这个顺序
+		sort.Slice(files, func(i, j int) bool {
+			return files[i].DeletedAt.Time.After(files[j].DeletedAt.Time)
+		})
+		logger.Info("successfully hit cache")
 		return files, nil
-	} else {
-		logger.Error("获取缓存数据发生错误", zap.Uint64("id", userID), zap.Error(err))
+	} else if !errors.Is(err, cache.ErrCacheMiss) {
+		logger.Error("FindDeletedFilesByUserID: Error getting deleted file list from cache", zap.String("key", listCacheKey), zap.Error(err))
 	}
 
-	if err := r.db.Unscoped().Where("user_id = ?", userID).Where("deleted_at IS NOT NULL").Find(&files).Error; err != nil {
-		return nil, err
+	var dbFiles []models.File
+	err = r.db.Unscoped().Where("user_id = ?", userID).Where("deleted_at IS NOT NULL").Order("deleted_at DESC").Find(&dbFiles).Error
+	if err != nil {
+		logger.Error("Error finding deleted files from DB", zap.Uint64("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("查询已删除文件列表失败: %w", err)
+	}
+	logger.Info("DB Query Result (after Find)", zap.Int("count", len(dbFiles)), zap.Uint64("userID", userID))
+	for i, file := range dbFiles {
+		logger.Info("DB File", zap.Int("index", i), zap.Uint64("id", file.ID), zap.Timep("deleted_at", &file.DeletedAt.Time), zap.String("filename", file.FileName))
 	}
 
 	// 将从数据库中获取的数据存入 Redis 缓存
-	r.cache.Set(ctx, cacheKey, files, r.cacheTTL)
-	return files, nil
+	saveErr := r.saveFilesToCacheList(ctx, listCacheKey, dbFiles, func(file models.File) float64 {
+		score := float64(0)
+		if file.DeletedAt.Valid {
+			score = float64(file.DeletedAt.Time.Unix())
+		}
+		return score
+	})
+	if saveErr != nil {
+		logger.Error("FindDeletedFilesByUserID: Failed to save deleted files to cache", zap.Error(saveErr))
+	}
+
+	return dbFiles, nil
 }
 
 // 未使用函数均没设置redis相关的逻辑,也没有再update函数中添加删除缓存逻辑
@@ -458,12 +514,12 @@ func (r *fileRepository) fileToMap(file *models.File) (map[string]any, error) {
 		result["deleted_at"] = file.DeletedAt.Time.Format(time.RFC3339Nano)
 	} else {
 		// 如果 DeletedAt 无效，json omitempty 可能会直接移除该字段
-		// 我们确保它存在且为空字符串，以保持字段统一
+		// 确保它存在且为空字符串，以保持字段统一
 		result["deleted_at"] = ""
 	}
 
 	// 对于指针类型，如果为 nil，json.Marshal 会将其变为 null。
-	// 我们需要确保它们在 map 中，以便后续转换，或者直接在这里处理成空字符串。
+	// 需要确保它们在 map 中，以便后续转换，或者直接在这里处理成空字符串。
 	// json marshal 的默认行为通常是可接受的。
 
 	return result, nil
@@ -558,4 +614,146 @@ func (r *fileRepository) mapToFile(dataMap map[string]string) (*models.File, err
 	}
 
 	return &file, nil
+}
+
+// getFilesFromCacheList 是一个私有的辅助函数，用于从 Redis Sorted Set 缓存中获取文件 ID 列表，
+// 并批量从 Hash 缓存中获取对应的文件元数据，最后反序列化为 []models.File。
+// 它处理了空列表标记和缓存读取错误。
+func (r *fileRepository) getFilesFromCacheList(ctx context.Context, listCacheKey string) ([]models.File, error) {
+	keyExists, err := r.cache.Exists(ctx, listCacheKey)
+	if err != nil {
+		logger.Error("getFilesFromCacheList: Error checking key existence in cache", zap.String("listCacheKey", listCacheKey), zap.Error(err))
+		return nil, fmt.Errorf("failed to check cache key existence: %w", err)
+	}
+
+	if !keyExists { // 键不存在
+		logger.Debug("getFilesFromCacheList: Cache miss - list key not found (Exists returned 0)", zap.String("listCacheKey", listCacheKey))
+		return nil, cache.ErrCacheMiss // 明确返回缓存未命中
+	}
+
+	// 1. 从 Redis Sorted Set 获取文件 ID 列表
+	fileIDsStr, err := r.cache.ZRevRange(ctx, listCacheKey, 0, -1).Result()
+	if err != nil {
+		if err == redis.Nil { // 列表 Key 不存在，视为缓存未命中
+			logger.Info("getFilesFromCacheList: Cache miss - list key not found", zap.String("listCacheKey", listCacheKey))
+			return nil, cache.ErrCacheMiss // 返回自定义的缓存未命中错误
+		}
+		logger.Error("Error getting file ID list from cache", zap.String("key", listCacheKey), zap.Error(err))
+		return nil, fmt.Errorf("failed to get file ID list from cache: %w", err)
+	}
+
+	if len(fileIDsStr) == 0 {
+		// 这是一个存在的空 Sorted Set，检查是否有 __EMPTY_LIST__ 标记
+		// 因为 ZRevRange 已经返回空，所以这里不需要再 ZRange 确认了
+		// 如果 saveFilesToCacheList 写入了 __EMPTY_LIST__，ZRevRange 不会返回空切片
+		// 所以走到这里，说明是存在一个空的 Sorted Set，且没有 __EMPTY_LIST__ 标记
+		logger.Warn("getFilesFromCacheList: Sorted Set exists but is truly empty (no members, no __EMPTY_LIST__ marker). Treating as cache miss to force DB refresh.", zap.String("listCacheKey", listCacheKey))
+		return nil, cache.ErrCacheMiss // 强制视为缓存未命中，回源
+	}
+
+	// 检查是否是空列表标记 (防止缓存穿透的特殊标记)
+	if len(fileIDsStr) == 1 {
+		if fileIDsStr[0] == "__EMPTY_LIST__" {
+			return []models.File{}, nil // 返回空切片
+		}
+	}
+
+	// 转换文件 ID 字符串为 uint64
+	var fileIDs []uint64
+	for _, idStr := range fileIDsStr {
+		id, parseErr := strconv.ParseUint(idStr, 10, 64)
+		if parseErr != nil {
+			logger.Error("Failed to parse file ID from cache", zap.String("idStr", idStr), zap.Error(parseErr))
+			continue // 跳过无效 ID
+		}
+		if id > 0 { // 确保 ID 有效
+			fileIDs = append(fileIDs, id)
+		}
+	}
+
+	// 如果没有有效文件ID，直接返回空列表
+	if len(fileIDs) == 0 {
+		return []models.File{}, nil
+	}
+
+	// 2. 批量从 Hash (file:metadata:<id>) 中获取每个文件的元数据
+	pipe := r.cache.TxPipeline()
+	cmds := make(map[uint64]*redis.StringStringMapCmd)
+	for _, fileID := range fileIDs {
+		metaKey := fmt.Sprintf("file:metadata:%d", fileID)
+		cmds[fileID] = pipe.HGetAll(ctx, metaKey)
+	}
+
+	_, execErr := pipe.Exec(ctx)
+	if execErr != nil && execErr != redis.Nil {
+		logger.Error("Error executing HGetAll pipeline for files metadata", zap.Error(execErr))
+		return nil, fmt.Errorf("failed to execute HGetAll pipeline: %w", execErr)
+	}
+
+	// 处理管道结果并反序列化
+	var files []models.File
+	for _, fileID := range fileIDs {
+		cmd := cmds[fileID]
+		fileMap, getErr := cmd.Result()
+		if getErr == nil && len(fileMap) > 0 {
+			// 忽略空值标记的哈希
+			if _, ok := fileMap["__NOT_FOUND__"]; !ok {
+				file, mapErr := r.mapToFile(fileMap)
+				if mapErr == nil {
+					files = append(files, *file)
+				} else {
+					logger.Error("Failed to map file hash to struct from cache", zap.Uint64("fileID", fileID), zap.Error(mapErr))
+					// 记录错误但不阻止其他文件被处理
+				}
+			}
+		} else if getErr != nil && getErr != redis.Nil {
+			logger.Error("Error getting file metadata hash for ID", zap.Uint64("fileID", fileID), zap.Error(getErr))
+			// 记录错误但不阻止其他文件被处理
+		}
+	}
+
+	return files, nil
+}
+
+// 用于将 []models.File 列表存储到 Redis 缓存中。
+// 它将文件元数据存储为 Hash，并将文件 ID 存储到 Sorted Set。
+func (r *fileRepository) saveFilesToCacheList(ctx context.Context, cacheKey string, files []models.File, scoreFunc func(file models.File) float64) error {
+	pipe := r.cache.TxPipeline()
+
+	if len(files) == 0 {
+		// 如果列表为空，存一个空列表标记，防止缓存穿透
+		pipe.ZAdd(ctx, cacheKey, &redis.Z{Score: 0, Member: "__EMPTY_LIST__"})
+		logger.Info("successfully zadd cacheKey member:__EMPTY_LIST__")
+	} else {
+		var zs []*redis.Z
+		for _, file := range files {
+			// 存储文件元数据到 Hash
+			fileMap, mapErr := r.fileToMap(&file)
+			if mapErr != nil {
+				logger.Error("saveFilesToCacheList: Failed to map models.File to hash for caching", zap.Uint64("fileID", file.ID), zap.Error(mapErr))
+				continue // 记录错误但不阻止其他文件被缓存
+			}
+			metaKey := fmt.Sprintf("file:metadata:%d", file.ID)
+			pipe.HMSet(ctx, metaKey, fileMap)
+			pipe.Expire(ctx, metaKey, r.cacheTTL) // Hash 也要设置 TTL
+
+			// 准备 Sorted Set 成员：使用传入的 scoreFunc 计算 Score
+			zs = append(zs, &redis.Z{
+				Score:  scoreFunc(file),
+				Member: strconv.FormatUint(file.ID, 10),
+			})
+		}
+		if len(zs) > 0 {
+			pipe.ZAdd(ctx, cacheKey, zs...) // 添加所有文件 ID 到 Sorted Set
+		}
+	}
+	pipe.Expire(ctx, cacheKey, r.cacheTTL) // 设置列表的 TTL
+
+	// 执行所有管道命令
+	_, execErr := pipe.Exec(ctx)
+	if execErr != nil {
+		logger.Error("saveFilesToCacheList: Failed to execute Redis pipeline for caching list", zap.String("key", cacheKey), zap.Error(execErr))
+		return fmt.Errorf("failed to save files to cache: %w", execErr)
+	}
+	return nil
 }

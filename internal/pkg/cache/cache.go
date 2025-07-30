@@ -30,7 +30,12 @@ type Cache interface {
 	HGetAll(ctx context.Context, key string) (map[string]string, error)
 	HDel(ctx context.Context, key string, fields ...string) error
 
+	//有序集合操作函数
+	ZAdd(ctx context.Context, key string, members ...*redis.Z) *redis.IntCmd
+	ZRevRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd
+	ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd
+
 	Expire(ctx context.Context, key string, expiration time.Duration) error
 	TTL(ctx context.Context, key string) (time.Duration, error)
-	TxPipeline() redis.Pipeline
+	TxPipeline() redis.Pipeliner
 }

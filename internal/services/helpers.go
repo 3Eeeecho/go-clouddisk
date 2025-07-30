@@ -132,7 +132,8 @@ func (s *fileService) checkFile(fileToCheck *models.File, userID uint64) error {
 	}
 
 	// 权限检查：确保文件属于当前用户
-	if fileToCheck.UserID != userID {
+	// 当fileToCheck.UserID == 0时,返回空值
+	if fileToCheck.UserID != 0 && fileToCheck.UserID != userID {
 		logger.Warn("Access denied for file", zap.Uint64("fileID", fileToCheck.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", fileToCheck.UserID))
 		return errors.New("access denied: file does not belong to user")
 	}
@@ -170,6 +171,10 @@ func (s *fileService) ValidateParentFolder(userID uint64, parentFolderID *uint64
 				zap.Uint64("parentFolderID", *parentFolderID),
 				zap.Error(err))
 			return nil, errors.New("parent folder not found")
+		}
+		if errors.Is(err, xerr.ErrParentFolderNotFound) {
+			logger.Error("parent folder not found", zap.Uint64("parentFolderID", *parentFolderID))
+			return nil, err
 		}
 		logger.Error("ValidateParentFolder: Failed to check parent folder",
 			zap.Uint64("parentFolderID", *parentFolderID),

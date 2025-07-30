@@ -140,6 +140,20 @@ func (r *RedisCache) HDel(ctx context.Context, key string, fields ...string) err
 	return nil
 }
 
+func (r *RedisCache) ZAdd(ctx context.Context, key string, members ...*redis.Z) *redis.IntCmd {
+	return r.client.ZAdd(ctx, key, members...)
+}
+
+// ZRevRange返回已排序集合中存储在key处的指定元素范围。
+// 元素按照从高到低的顺序排列。
+func (r *RedisCache) ZRevRange(ctx context.Context, key string, start, stop int64) *redis.StringSliceCmd {
+	return r.client.ZRevRange(ctx, key, start, stop)
+}
+
+func (r *RedisCache) ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd {
+	return r.client.ZRem(ctx, key, members...)
+}
+
 func (r *RedisCache) Expire(ctx context.Context, key string, expiration time.Duration) error {
 	err := r.client.Expire(ctx, key, expiration).Err()
 	if err != nil {
@@ -158,6 +172,8 @@ func (r *RedisCache) TTL(ctx context.Context, key string) (time.Duration, error)
 	return ttl, nil
 }
 
+// TxPipeline返回一个新的管道，可以用来发送多个命令
+// 到Redis的单次往返。
 func (r *RedisCache) TxPipeline() redis.Pipeliner {
 	return r.client.TxPipeline()
 }

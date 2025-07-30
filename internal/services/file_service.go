@@ -91,7 +91,6 @@ func (s *fileService) GetFileByID(userID uint64, fileID uint64) (*models.File, e
 
 // GetFilesByUserID 获取用户在指定文件夹下的文件和文件夹列表
 func (s *fileService) GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error) {
-	logger.Debug("GetFilesByUserID called", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID))
 	// 检查父文件夹
 	_, err := s.ValidateParentFolder(userID, parentFolderID)
 	if err != nil {
