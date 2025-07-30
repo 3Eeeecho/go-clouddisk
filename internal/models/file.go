@@ -20,14 +20,14 @@ type File struct {
 	OssBucket      *string        `gorm:"type:varchar(64);default:null" json:"oss_bucket"`
 	OssKey         *string        `gorm:"type:varchar(255);default:null" json:"oss_key"`
 	MD5Hash        *string        `gorm:"type:varchar(32);default:null" json:"md5_hash"`
-	Status         uint8          `gorm:"type:tinyint unsigned;not null;default:1" json:"status"` // 1:正常, 0:回收站, -1:已删除
+	Status         uint8          `gorm:"type:tinyint unsigned;not null;default:1" json:"status"` // 1:正常, 0:回收站
 	CreatedAt      time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 
 	// 定义 GORM 关联，方便预加载
-	User         *User `gorm:"foreignKey:UserID"`
-	ParentFolder *File `gorm:"foreignKey:ParentFolderID"` // 自关联，获取父文件夹信息
+	User         *User `gorm:"foreignKey:UserID" json:"-"`
+	ParentFolder *File `gorm:"foreignKey:ParentFolderID" json:"-"` // 自关联，获取父文件夹信息
 }
 
 // TableName 指定 GORM 使用的表名

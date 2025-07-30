@@ -86,6 +86,7 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
 
 			fileGroup.GET("/", handlers.ListUserFiles(fileService, routerCfg.cfg))
+			fileGroup.GET("/:file_id", handlers.GetSpecificFile(fileService, routerCfg.cfg))
 			fileGroup.POST("/upload", handlers.UploadFile(fileService, routerCfg.cfg))
 			fileGroup.POST("/folder", handlers.CreateFolder(fileService, routerCfg.cfg))
 			fileGroup.GET("/download/:file_id", handlers.DownloadFile(fileService, routerCfg.cfg))

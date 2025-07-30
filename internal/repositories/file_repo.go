@@ -2,14 +2,18 @@ package repositories
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/go-viper/mapstructure/v2"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -38,12 +42,12 @@ type FileRepository interface {
 
 type fileRepository struct {
 	db       *gorm.DB
-	cache    cache.Cache
+	cache    *cache.RedisCache
 	cacheTTL time.Duration // 缓存过期时间默认为5分钟
 }
 
 // NewFileRepository 创建一个新的 FileRepository 实例
-func NewFileRepository(db *gorm.DB, cache cache.Cache) FileRepository {
+func NewFileRepository(db *gorm.DB, cache *cache.RedisCache) FileRepository {
 	return &fileRepository{
 		db:       db,
 		cache:    cache,
@@ -72,18 +76,22 @@ func (r *fileRepository) Create(file *models.File) error {
 
 func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	ctx := context.Background()
+	cacheKey := fmt.Sprintf("file:metadata:%d", id)
 
 	// 尝试从Redis缓存中获取
-	cacheKey := fmt.Sprintf("file:id:%d", id)
-	var file models.File
-	err := r.cache.Get(ctx, cacheKey, &file)
+	resultMap, err := r.cache.HGetAll(ctx, cacheKey)
 	if err == nil {
-		return &file, nil
-	} else {
-		logger.Error("获取文件缓存数据发生错误", zap.Uint64("id", id), zap.Error(err))
+		file, err := r.mapToFile(resultMap) // 辅助函数将 map[string]string 映射到 models.File
+		if err == nil {
+			return file, nil
+		}
+		logger.Error("FindByID: Failed to map cached hash to models.File", zap.Uint64("id", id), zap.Error(err))
+	} else if !errors.Is(err, cache.ErrCacheMiss) { // 只有不是 ErrCacheMiss 才记录错误
+		logger.Error("FindByID: Error getting file hash from cache", zap.Uint64("id", id), zap.Error(err))
 	}
 
 	// 缓存未命中或获取失败，从数据库中加载
+	var file models.File
 	err = r.db.Unscoped().First(&file, id).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
@@ -95,7 +103,13 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	}
 
 	// 将从数据库中获取的数据存入 Redis 缓存
-	r.cache.Set(ctx, cacheKey, file, r.cacheTTL)
+	fileMap, err := r.fileToMap(&file) // 辅助函数将 models.File 映射到 map[string]any
+	if err != nil {
+		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", id), zap.Error(err))
+	} else {
+		r.cache.HMSet(ctx, cacheKey, fileMap)     // 使用封装好的 HMSet
+		r.cache.Expire(ctx, cacheKey, r.cacheTTL) // 使用封装好的 Expire
+	}
 
 	return &file, nil
 }
@@ -315,7 +329,7 @@ func (r *fileRepository) SoftDelete(id uint64) error {
 
 	err = r.db.Model(file).
 		Where("id = ?", id).
-		Updates(map[string]interface{}{
+		Updates(map[string]any{
 			"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
 			"status":     0,          // 设置 status 字段为 0
 		}).Error
@@ -412,4 +426,136 @@ func (r *fileRepository) CountFilesInStorage(ossKey string, md5Hash string, excl
 		return 0, fmt.Errorf("failed to count files in storage: %w", err)
 	}
 	return count, nil
+}
+
+// 辅助函数
+func (r *fileRepository) fileToMap(file *models.File) (map[string]any, error) {
+	// 使用 json.Marshal 和 json.Unmarshal 是一个将 struct 转换为 map 的高效技巧
+	data, err := json.Marshal(file)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]any
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+
+	// 为确保 Redis 中存储的是可预测的格式，我们手动处理特殊类型。
+	// 虽然很多客户端会自动转换，但显式处理更安全。
+	if file.CreatedAt.IsZero() {
+		result["created_at"] = ""
+	} else {
+		result["created_at"] = file.CreatedAt.Format(time.RFC3339Nano)
+	}
+
+	if file.UpdatedAt.IsZero() {
+		result["updated_at"] = ""
+	} else {
+		result["updated_at"] = file.UpdatedAt.Format(time.RFC3339Nano)
+	}
+
+	if file.DeletedAt.Valid {
+		result["deleted_at"] = file.DeletedAt.Time.Format(time.RFC3339Nano)
+	} else {
+		// 如果 DeletedAt 无效，json omitempty 可能会直接移除该字段
+		// 我们确保它存在且为空字符串，以保持字段统一
+		result["deleted_at"] = ""
+	}
+
+	// 对于指针类型，如果为 nil，json.Marshal 会将其变为 null。
+	// 我们需要确保它们在 map 中，以便后续转换，或者直接在这里处理成空字符串。
+	// json marshal 的默认行为通常是可接受的。
+
+	return result, nil
+}
+
+// 将 map[string]string 映射回 models.File
+// 需要处理字符串到正确类型的转换，尤其是时间类型和指针
+// 采用手动转换，确保类型安全，彻底解决 unmarshal 错误。
+func (r *fileRepository) mapToFile(dataMap map[string]string) (*models.File, error) {
+	var file models.File
+
+	// 定义一个解码钩子，用于将字符串转换为各种目标类型
+	hook := func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		// 只处理从 string 到其他类型的转换
+		if f.Kind() != reflect.String {
+			return data, nil
+		}
+
+		// 获取源字符串
+		sourceString := data.(string)
+
+		// 如果源字符串为空，对于指针类型应为 nil，对于值类型应为其零值
+		if sourceString == "" {
+			if t.Kind() == reflect.Ptr {
+				return nil, nil // 返回 nil 指针
+			}
+			// 对于非指针类型，返回其零值
+			return reflect.Zero(t).Interface(), nil
+		}
+
+		// 根据目标类型进行转换
+		switch t {
+		case reflect.TypeOf(time.Time{}):
+			return time.Parse(time.RFC3339Nano, sourceString)
+
+		case reflect.TypeOf(gorm.DeletedAt{}):
+			parsedTime, err := time.Parse(time.RFC3339Nano, sourceString)
+			if err != nil {
+				return nil, err
+			}
+			return gorm.DeletedAt{Time: parsedTime, Valid: true}, nil
+		}
+
+		// 处理所有数值类型和指针数值类型
+		switch t.Kind() {
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			return strconv.ParseUint(sourceString, 10, 64)
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			return strconv.ParseInt(sourceString, 10, 64)
+		case reflect.Ptr:
+			// 处理指针类型的数值，例如 *uint64
+			switch t.Elem().Kind() {
+			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+				val, err := strconv.ParseUint(sourceString, 10, 64)
+				if err != nil {
+					return nil, err
+				}
+				// 需要返回一个指向该值的指针，但类型要匹配
+				// 例如，如果目标是 *uint64，我们需要返回一个 *uint64
+				// 使用反射来创建正确类型的指针
+				ptr := reflect.New(t.Elem())
+				ptr.Elem().SetUint(val)
+				return ptr.Interface(), nil
+			}
+		}
+
+		// 其他类型保持默认转换行为
+		return data, nil
+	}
+
+	// 配置解码器
+	config := &mapstructure.DecoderConfig{
+		Result:  &file,
+		TagName: "json", // 使用 'json' 标签来匹配 map 的键和结构体字段
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			// 可以组合多个钩子，这里用一个就够了
+			hook,
+		),
+		// 当 map 中的 key 在 struct 中找不到时，返回错误
+		// 这有助于发现字段名不匹配的问题
+		ErrorUnused: false,
+	}
+
+	decoder, err := mapstructure.NewDecoder(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create map decoder: %w", err)
+	}
+
+	// 执行解码
+	if err := decoder.Decode(dataMap); err != nil {
+		return nil, fmt.Errorf("failed to decode map to File struct: %w", err)
+	}
+
+	return &file, nil
 }

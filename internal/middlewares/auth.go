@@ -31,7 +31,7 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 
 		// 2. 解析和验证 Token
 		claims := &utils.Claims{}
-		token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (interface{}, error) {
+		token, err := jwt.ParseWithClaims(tokenString, claims, func(t *jwt.Token) (any, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, errors.New("unexpected signing method")
 			}

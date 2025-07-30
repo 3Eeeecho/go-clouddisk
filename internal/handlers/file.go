@@ -29,6 +29,43 @@ import (
 // @Success 200 {object} xerr.Response "文件列表"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/ [get]
+func GetSpecificFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		if !ok {
+			return
+		}
+
+		fileIDStr := c.Param("file_id")
+		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+		if err != nil {
+			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
+			return
+		}
+
+		files, err := fileService.GetFileByID(currentUserID, fileID)
+		if err != nil {
+			if err.Error() == "not found file" {
+				xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+				return
+			}
+			xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to list files: %v", err))
+			return
+		}
+
+		xerr.Success(c, http.StatusOK, "Files listed successfully", files)
+	}
+}
+
+// @Summary 获取用户文件列表
+// @Description 获取当前用户指定文件夹下的文件和文件夹列表
+// @Tags 文件
+// @Produce json
+// @Security BearerAuth
+// @Param parent_id query int false "父文件夹ID"
+// @Success 200 {object} xerr.Response "文件列表"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Router /api/v1/files/ [get]
 func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := ginutils.GetUserIDFromContext(c)

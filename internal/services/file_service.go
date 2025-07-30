@@ -26,6 +26,7 @@ import (
 )
 
 type FileService interface {
+	GetFileByID(userID uint64, fileID uint64) (*models.File, error)
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 	UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
@@ -63,6 +64,29 @@ func NewFileService(fileRepo repositories.FileRepository, userRepo repositories.
 		fileStorageService: fileStorageService,
 		cacheService:       cacheService,
 	}
+}
+
+func (s *fileService) GetFileByID(userID uint64, fileID uint64) (*models.File, error) {
+	logger.Debug("GetFilesByUserID called", zap.Uint64("userID", userID), zap.Any("fileID", fileID))
+
+	file, err := s.fileRepo.FindByID(fileID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Error("Not found file", zap.Uint64("userID", userID), zap.Any("fileID", fileID), zap.Error(err))
+			return nil, fmt.Errorf("not found file")
+		}
+		logger.Error("Failed to get file for user", zap.Uint64("userID", userID), zap.Any("fileID", fileID), zap.Error(err))
+		return nil, fmt.Errorf("failed to get file for user %d , fileID:%d, err: %w", userID, fileID, err)
+	}
+
+	// 检查文件状态
+	err = s.checkFile(file, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Info("GetFilesByUserID success", zap.Uint64("userID", userID), zap.Any("fileID", fileID))
+	return file, nil
 }
 
 // GetFilesByUserID 获取用户在指定文件夹下的文件和文件夹列表
