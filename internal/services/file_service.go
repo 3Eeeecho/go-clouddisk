@@ -930,7 +930,7 @@ func (s *fileService) RenameFile(userID uint64, fileID uint64, newFileName strin
 		}
 	}()
 
-	err = tx.Save(fileToRename).Error
+	err = s.fileRepo.Update(fileToRename)
 	if err != nil {
 		tx.Rollback()
 		logger.Error("RenameFile: Failed to update file name in DB transaction",
@@ -1057,7 +1057,7 @@ func (s *fileService) MoveFile(userID uint64, fileID uint64, targetParentID *uin
 	fileToMove.ParentFolderID = targetParentID
 	fileToMove.Path = newParentPath
 
-	if err = tx.Save(fileToMove).Error; err != nil {
+	if err = s.fileRepo.Update(fileToMove); err != nil {
 		tx.Rollback()
 		logger.Error("MoveFile: Failed to update file's parent and path in DB transaction",
 			zap.Uint64("fileID", fileToMove.ID),

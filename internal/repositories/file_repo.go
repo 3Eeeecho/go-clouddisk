@@ -60,30 +60,57 @@ func NewFileRepository(db *gorm.DB, cache *cache.RedisCache) FileRepository {
 
 func (r *fileRepository) Create(file *models.File) error {
 	err := r.db.Create(file).Error
-	if err == nil {
-		ctx := context.Background()
-		//删除单文件缓存
-		r.cache.Del(ctx,
-			fmt.Sprintf("file:id:%d", file.ID),
-			fmt.Sprintf("file:md5:%v", file.MD5Hash),
-		)
-		//删除列表缓存
-		if file.ParentFolderID == nil {
-			r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:root", file.UserID)) // 父目录列表
-		} else {
-			r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:%d", file.UserID, *file.ParentFolderID)) // 父目录列表
-		}
+	if err != nil {
+		logger.Error("Create: Failed to create file in DB", zap.Error(err), zap.Uint64("userID", file.UserID), zap.String("fileName", file.FileName))
+		return fmt.Errorf("failed to create file: %w", err)
 	}
-	return err
+	ctx := context.Background()
+	pipe := r.cache.TxPipeline()
+	// 将新文件的元数据存入 file:metadata:<new_file_id>
+	fileMetadataKey := generateFileMetadataKey(file.ID)
+	fileMap, err := r.fileToMap(file) // 辅助函数将 models.File 映射到 map[string]any
+	if err != nil {
+		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", file.ID), zap.Error(err))
+	} else {
+		pipe.HMSet(ctx, fileMetadataKey, fileMap)
+		pipe.Expire(ctx, fileMetadataKey, r.cacheTTL)
+	}
+
+	// ZAdd 将新文件的 ID 及其 CreatedAt 的 Unix 时间戳作为 Score，添加到对应的 Sorted Set 中
+	listCacheKey := generateFileListKey(file.UserID, file.ParentFolderID)
+	pipe.ZAdd(ctx, listCacheKey, &redis.Z{
+		Score:  float64(file.CreatedAt.Unix()),
+		Member: strconv.FormatUint(file.ID, 10),
+	})
+
+	//如果之前存过"__EMPTY_LIST__",需要ZRem掉
+	pipe.ZRem(ctx, listCacheKey, "__EMPTY_LIST__")
+
+	//(可选)将MD5Hash查询也缓存
+	// if file.MD5Hash != nil && *file.MD5Hash != "" {
+	// 	md5CacheKey := generateFileMD5Key(*file.MD5Hash)
+	// 	pipe.Set(ctx, md5CacheKey, file.ID, r.cacheTTL)
+	// }
+
+	if _, execErr := pipe.Exec(ctx); execErr != nil {
+		logger.Error("Create: Failed to execute Redis pipeline for cache update",
+			zap.Uint64("fileID", file.ID),
+			zap.Uint64("userID", file.UserID),
+			zap.Error(execErr),
+		)
+		// 缓存更新失败通常不返回错误，但需要记录
+	}
+	logger.Info("Create: File created and cache updated", zap.Uint64("fileID", file.ID), zap.Uint64("userID", file.UserID))
+	return nil
 }
 
 func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	ctx := context.Background()
-	cacheKey := fmt.Sprintf("file:metadata:%d", id)
+	fileMetadataKey := generateFileMetadataKey(id)
 
 	// 尝试从Redis缓存中获取
 	// 单文件缓存采用Hash结构
-	resultMap, err := r.cache.HGetAll(ctx, cacheKey)
+	resultMap, err := r.cache.HGetAll(ctx, fileMetadataKey)
 	if err == nil {
 		if _, ok := resultMap["__NOT_FOUND__"]; ok {
 			return nil, xerr.ErrParentFolderNotFound //  如果从缓存命中不存在标记，直接返回不存在错误
@@ -103,8 +130,8 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// 如果数据库中也不存在，缓存一个空值，防止缓存穿透
-			r.cache.HSet(ctx, cacheKey, "__NOT_FOUND__", "1")
-			r.cache.Expire(ctx, cacheKey, 1*time.Minute)
+			r.cache.HSet(ctx, fileMetadataKey, "__NOT_FOUND__", "1")
+			r.cache.Expire(ctx, fileMetadataKey, 1*time.Minute)
 			return nil, err // 文件未找到
 		}
 		return nil, fmt.Errorf("从数据库查询文件失败: %w", err)
@@ -115,8 +142,8 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	if err != nil {
 		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", id), zap.Error(err))
 	} else {
-		r.cache.HMSet(ctx, cacheKey, fileMap)     // 使用封装好的 HMSet
-		r.cache.Expire(ctx, cacheKey, r.cacheTTL) // 使用封装好的 Expire
+		r.cache.HMSet(ctx, fileMetadataKey, fileMap)     // 使用封装好的 HMSet
+		r.cache.Expire(ctx, fileMetadataKey, r.cacheTTL) // 使用封装好的 Expire
 	}
 
 	return &file, nil
@@ -128,13 +155,8 @@ func (r *fileRepository) FindByUserIDAndParentFolderID(userID uint64, parentFold
 	ctx := context.Background()
 
 	// 尝试从Redis缓存中获取
-	var listCacheKey string
 	var files []models.File
-	if parentFolderID == nil {
-		listCacheKey = fmt.Sprintf("files:list:user:%d:folder:root", userID)
-	} else {
-		listCacheKey = fmt.Sprintf("files:list:user:%d:folder:%d", userID, *parentFolderID)
-	}
+	listCacheKey := generateFileListKey(userID, parentFolderID)
 
 	files, err := r.getFilesFromCacheList(ctx, listCacheKey)
 	if err == nil {
@@ -184,10 +206,13 @@ func (r *fileRepository) FindByUserIDAndParentFolderID(userID uint64, parentFold
 // FindFileByMD5Hash 根据 MD5Hash 查找文件
 func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error) {
 	ctx := context.Background()
-	cacheKey := fmt.Sprintf("file:metadata:%s", md5Hash)
+	fileMetadataKey := generateFileMD5Key(md5Hash)
 	// 尝试从Redis缓存中获取
-	resultMap, err := r.cache.HGetAll(ctx, cacheKey)
+	resultMap, err := r.cache.HGetAll(ctx, fileMetadataKey)
 	if err == nil {
+		if _, ok := resultMap["__NOT_FOUND__"]; ok {
+			return nil, xerr.ErrParentFolderNotFound //  如果从缓存命中不存在标记，直接返回不存在错误
+		}
 		file, err := r.mapToFile(resultMap) // 辅助函数将 map[string]string 映射到 models.File
 		if err == nil {
 			return file, nil
@@ -210,8 +235,8 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 	if err != nil {
 		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.String("md5Hash", md5Hash), zap.Error(err))
 	} else {
-		r.cache.HMSet(ctx, cacheKey, fileMap)     // 使用封装好的 HMSet
-		r.cache.Expire(ctx, cacheKey, r.cacheTTL) // 使用封装好的 Expire
+		r.cache.HMSet(ctx, fileMetadataKey, fileMap)     // 使用封装好的 HMSet
+		r.cache.Expire(ctx, fileMetadataKey, r.cacheTTL) // 使用封装好的 Expire
 	}
 
 	return &file, nil
@@ -220,7 +245,7 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 func (r *fileRepository) FindDeletedFilesByUserID(userID uint64) ([]models.File, error) {
 	ctx := context.Background()
 	// 尝试从Redis缓存中获取
-	listCacheKey := fmt.Sprintf("files:deleted:user:%d", userID)
+	listCacheKey := generateDeletedFilesKey(userID)
 
 	files, err := r.getFilesFromCacheList(ctx, listCacheKey)
 	if err == nil {
@@ -354,58 +379,159 @@ func (r *fileRepository) FindByPath(path string) (*models.File, error) {
 }
 
 func (r *fileRepository) Update(file *models.File) error {
-	err := r.db.Save(file).Error
-	if err == nil {
-		ctx := context.Background()
-		//删除单文件缓存
-		r.cache.Del(ctx,
-			fmt.Sprintf("file:id:%d", file.ID),
-			fmt.Sprintf("file:md5:%v", file.MD5Hash),
-		)
-		//删除列表缓存
-		if file.ParentFolderID == nil {
-			r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:root", file.UserID)) // 父目录列表
-		} else {
-			r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:%d", file.UserID, *file.ParentFolderID)) // 父目录列表
-		}
-		r.cache.Del(ctx, fmt.Sprintf("files:deleted:user:%d", file.UserID))
+	// 获取文件旧状态，用于判断 ParentFolderID 是否变化
+	oldFile, findErr := r.FindByID(file.ID)
+	if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) { // 如果是其他查找错误
+		logger.Error("Update: Failed to retrieve old file state for cache invalidation", zap.Uint64("fileID", file.ID), zap.Error(findErr))
+		// 这里的错误应该向上返回，因为它可能影响更新逻辑
+		return fmt.Errorf("failed to get old file state for update: %w", findErr)
 	}
+	// 如果 oldFile 为 nil (gorm.ErrRecordNotFound) 表示文件不存在，直接返回错误
+	// 这里假设 Save 会根据 ID 更新，如果 ID 不存在，Save 也会报错。
+	// 所以如果 FindByID 返回 NotFound，通常 Update 也不应该进行。
+	if errors.Is(findErr, gorm.ErrRecordNotFound) || oldFile == nil {
+		return fmt.Errorf("Update: file with ID %d not found in DB", file.ID)
+	}
+
+	err := r.db.Save(file).Error
+	if err != nil {
+		logger.Error("Update: Failed to update file in DB", zap.Error(err), zap.Uint64("fileID", file.ID), zap.Uint64("userID", file.UserID))
+		return fmt.Errorf("failed to update file: %w", err)
+	}
+
+	ctx := context.Background()
+	pipe := r.cache.TxPipeline()
+	fileMetadataKey := generateFileMetadataKey(file.ID)
+
+	fileMap, err := r.fileToMap(file)
+	if err != nil {
+		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", file.ID), zap.Error(err))
+	} else {
+		pipe.HMSet(ctx, fileMetadataKey, fileMap)
+		pipe.Expire(ctx, fileMetadataKey, r.cacheTTL)
+	}
+
+	// 获取旧的父文件夹键和新的父文件夹键
+	oldListCacheKey := generateFileListKey(oldFile.UserID, oldFile.ParentFolderID)
+	newListCacheKey := generateFileListKey(file.UserID, file.ParentFolderID)
+
+	// 文件ID的字符串形式
+	fileIDStr := strconv.FormatUint(file.ID, 10)
+	newZMember := &redis.Z{
+		Score:  float64(file.CreatedAt.Unix()), // 假设 Score 仍然基于 CreatedAt
+		Member: fileIDStr,
+	}
+
+	// 判断 ParentFolderID 是否变化
+	parentFolderIDChanged := false
+	if oldListCacheKey != newListCacheKey { // 更简洁的判断方式
+		parentFolderIDChanged = true
+	}
+
+	if parentFolderIDChanged {
+		// 从旧父目录的 Sorted Set 中 ZRem 掉该文件 ID
+		pipe.ZRem(ctx, oldListCacheKey, fileIDStr)
+		// 考虑旧列表变空时是否写入 __EMPTY_LIST__
+		// 这是一个复杂的逻辑点，通常在GetFilesFromCacheList的回源逻辑中处理更简单
+		// pipe.ZAdd(ctx, oldListCacheKey, &redis.Z{Score: 0, Member: "__EMPTY_LIST__"}) // 谨慎添加
+
+		// ZAdd 到新父目录的 Sorted Set 中
+		pipe.ZAdd(ctx, newListCacheKey, newZMember)
+		pipe.ZRem(ctx, newListCacheKey, "__EMPTY_LIST__") // 如果新列表之前有空标记，删除
+	} else {
+		// ParentFolderID 没有变化，但可能需要更新文件在当前列表中的排序分数
+		// 稳妥的做法是先移除旧的，再添加新的，以确保分数更新
+		pipe.ZRem(ctx, newListCacheKey, fileIDStr)
+		pipe.ZAdd(ctx, newListCacheKey, newZMember)
+		pipe.ZRem(ctx, newListCacheKey, "__EMPTY_LIST__") // 确保移除空标记
+	}
+
+	// TODO 如果业务允许MD5更新（例如文件内容更新），则需要删除旧缓存,并设置新缓存
+
+	// 	如果文件状态从“已删除”恢复，或从“正常”变为“已删除”，需要更新已删除列表缓存
+	// 这里先简单地删除整个 deleted 列表缓存，强制下次查询时重建
+	// 更精确的做法是根据 oldFile.DeletedAt 和 file.DeletedAt 的状态来 ZRem/ZAdd
+	pipe.Del(ctx, fmt.Sprintf("files:deleted:user:%d", file.UserID))
+
+	// 执行管道命令
+	if _, execErr := pipe.Exec(ctx); execErr != nil {
+		logger.Error("Update: Failed to execute Redis pipeline for cache update",
+			zap.Uint64("fileID", file.ID),
+			zap.Uint64("userID", file.UserID),
+			zap.Error(execErr),
+		)
+	}
+
 	return err
 }
 
 // 软删除文件,设置DeletedAt字段
-func (r *fileRepository) SoftDelete(id uint64) error {
-	file, err := r.FindByID(id) // 这里 FindByID 会从缓存或DB获取，以获取文件详细信息
+func (r *fileRepository) SoftDelete(fileID uint64) error {
+	file, err := r.FindByID(fileID) // 这里 FindByID 会从缓存或DB获取，以获取文件详细信息
 	if err != nil {
 		return err
 	}
 	if file == nil {
-		return errors.New("文件不存在")
+		return xerr.ErrFileNotFound
 	}
 
 	err = r.db.Model(file).
-		Where("id = ?", id).
+		Where("id = ?", fileID).
 		Updates(map[string]any{
 			"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
 			"status":     0,          // 设置 status 字段为 0
 		}).Error
 	if err != nil {
-		return fmt.Errorf("软删除文件失败: %w", err)
+		logger.Error("SoftDelete: Failed to soft delete file in DB", zap.Error(err), zap.Uint64("fileID", fileID))
+		return fmt.Errorf("failed to soft delete file: %w", err)
 	}
 
 	ctx := context.Background()
-	//删除单文件缓存
-	r.cache.Del(ctx,
-		fmt.Sprintf("file:id:%d", file.ID),
-		fmt.Sprintf("file:md5:%v", file.MD5Hash),
-	)
-	//删除列表缓存
-	if file.ParentFolderID == nil {
-		r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:root", file.UserID)) // 父目录列表
+	pipe := r.cache.TxPipeline()
+	fileMetadataKey := generateFileMetadataKey(file.ID)
+
+	fileMap, err := r.fileToMap(file)
+	if err != nil {
+		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", file.ID), zap.Error(err))
 	} else {
-		r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:%d", file.UserID, *file.ParentFolderID)) // 父目录列表
+		// HMSet 更新 file:metadata:<file_id> 中的 status 和 deleted_at 字段
+		// 因为软删除会更新 DeletedAt 字段，所以重新存储整个 map
+		pipe.HMSet(ctx, fileMetadataKey, fileMap)
+		pipe.Expire(ctx, fileMetadataKey, r.cacheTTL)
 	}
 
+	//从原本列表中移除该文件 ID
+	listCacheKey := generateFileListKey(file.UserID, file.ParentFolderID)
+	pipe.ZRem(ctx, listCacheKey, strconv.FormatUint(file.ID, 10))
+
+	// 使用 deleted_at 的 Unix 时间戳作为 Score
+	deletedListCacheKey := generateDeletedFilesKey(file.UserID)
+	if file.DeletedAt.Valid { // 确保 DeletedAt 是有效的
+		deletedZMember := &redis.Z{
+			Score:  float64(file.DeletedAt.Time.Unix()),
+			Member: strconv.FormatUint(file.ID, 10),
+		}
+		pipe.ZAdd(ctx, deletedListCacheKey, deletedZMember)
+		pipe.ZRem(ctx, deletedListCacheKey, "__EMPTY_LIST__") // 如果之前有空标记，删除
+	} else {
+		logger.Warn("SoftDelete: file.DeletedAt is not valid after GORM Delete. Check model hooks.", zap.Uint64("fileID", file.ID))
+	}
+
+	// 删除单文件 MD5 缓存，因为文件状态变化可能影响其查找
+	if file.MD5Hash != nil && *file.MD5Hash != "" {
+		pipe.Del(ctx, generateFileMD5Key(*file.MD5Hash))
+	}
+
+	// 执行管道命令
+	if _, execErr := pipe.Exec(ctx); execErr != nil {
+		logger.Error("SoftDelete: Failed to execute Redis pipeline for cache update",
+			zap.Uint64("fileID", file.ID),
+			zap.Uint64("userID", file.UserID),
+			zap.Error(execErr),
+		)
+	}
+
+	logger.Info("SoftDelete: File soft deleted and cache updated", zap.Uint64("fileID", file.ID), zap.Uint64("userID", file.UserID))
 	return nil
 }
 
@@ -416,7 +542,7 @@ func (r *fileRepository) PermanentDelete(id uint64) error {
 		return err
 	}
 	if file == nil {
-		return errors.New("文件不存在")
+		return xerr.ErrFileNotFound
 	}
 
 	// 永久删除数据库记录
@@ -426,18 +552,45 @@ func (r *fileRepository) PermanentDelete(id uint64) error {
 	}
 
 	ctx := context.Background()
-	//删除单文件缓存
-	r.cache.Del(ctx,
-		fmt.Sprintf("file:id:%d", file.ID),
-		fmt.Sprintf("file:md5:%v", file.MD5Hash),
-	)
-	//删除列表缓存
-	if file.ParentFolderID == nil {
-		r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:root", file.UserID)) // 父目录列表
+	pipe := r.cache.TxPipeline()
+	fileMetadataKey := generateFileMetadataKey(file.ID)
+
+	fileMap, err := r.fileToMap(file)
+	if err != nil {
+		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", file.ID), zap.Error(err))
 	} else {
-		r.cache.Del(ctx, fmt.Sprintf("files:user:%d:folder:%d", file.UserID, *file.ParentFolderID)) // 父目录列表
+		// HMSet 更新 file:metadata:<file_id> 中的 status 和 deleted_at 字段
+		// 因为软删除会更新 DeletedAt 字段，所以重新存储整个 map
+		pipe.HMSet(ctx, fileMetadataKey, fileMap)
+		pipe.Expire(ctx, fileMetadataKey, r.cacheTTL)
 	}
 
+	// Del 删除 file:metadata:<file_id> 哈希键
+	pipe.Del(ctx, generateFileMetadataKey(file.ID))
+
+	// ZRem 从所有可能存在的相关 Sorted Set 中移除该文件 ID
+	// 从原父目录的 Sorted Set 中移除 (无论它是否在回收站，原父目录列表都不应再包含它)
+	listCacheKey := generateFileListKey(file.UserID, file.ParentFolderID)
+	pipe.ZRem(ctx, listCacheKey, strconv.FormatUint(file.ID, 10))
+
+	// 从回收站列表 Sorted Set 中移除 (如果它在回收站的话)
+	deletedListCacheKey := fmt.Sprintf("files:deleted:user:%d", file.UserID)
+	pipe.ZRem(ctx, deletedListCacheKey, strconv.FormatUint(file.ID, 10))
+
+	if file.MD5Hash != nil && *file.MD5Hash != "" {
+		pipe.Del(ctx, generateFileMD5Key(*file.MD5Hash))
+	}
+
+	// 执行管道命令
+	if _, execErr := pipe.Exec(ctx); execErr != nil {
+		logger.Error("PermanentDelete: Failed to execute Redis pipeline for cache update",
+			zap.Uint64("fileID", file.ID),
+			zap.Uint64("userID", file.UserID),
+			zap.Error(execErr),
+		)
+	}
+
+	logger.Info("PermanentDelete: File permanently deleted and cache invalidated", zap.Uint64("fileID", file.ID), zap.Uint64("userID", file.UserID))
 	return nil
 }
 
@@ -756,4 +909,23 @@ func (r *fileRepository) saveFilesToCacheList(ctx context.Context, cacheKey stri
 		return fmt.Errorf("failed to save files to cache: %w", execErr)
 	}
 	return nil
+}
+
+func generateFileListKey(userID uint64, parentFolderID *uint64) string {
+	if parentFolderID == nil {
+		return fmt.Sprintf("files:user:%d:folder:root", userID)
+	}
+	return fmt.Sprintf("files:user:%d:folder:%d", userID, *parentFolderID)
+}
+
+func generateDeletedFilesKey(userID uint64) string {
+	return fmt.Sprintf("files:deleted:user:%d", userID)
+}
+
+func generateFileMetadataKey(fileID uint64) string {
+	return fmt.Sprintf("file:metadata:%d", fileID)
+}
+
+func generateFileMD5Key(md5Hash string) string {
+	return fmt.Sprintf("file:md5:%s", md5Hash)
 }
