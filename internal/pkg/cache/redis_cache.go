@@ -13,13 +13,16 @@ import (
 )
 
 var ErrCacheMiss error = errors.New("缓存未命中,key不存在")
+var CacheTTL time.Duration = 10 * time.Minute
 
 type RedisCache struct {
 	client *redis.Client
 }
 
 func NewRedisCache(client *redis.Client) *RedisCache {
-	return &RedisCache{client: client}
+	return &RedisCache{
+		client: client,
+	}
 }
 
 func (r *RedisCache) Set(ctx context.Context, key string, value any, expiration time.Duration) error {
@@ -150,8 +153,12 @@ func (r *RedisCache) ZRevRange(ctx context.Context, key string, start, stop int6
 	return r.client.ZRevRange(ctx, key, start, stop)
 }
 
-func (r *RedisCache) ZRem(ctx context.Context, key string, members ...interface{}) *redis.IntCmd {
+func (r *RedisCache) ZRem(ctx context.Context, key string, members ...any) *redis.IntCmd {
 	return r.client.ZRem(ctx, key, members...)
+}
+
+func (r *RedisCache) XAdd(ctx context.Context, a *redis.XAddArgs) *redis.StringCmd {
+	return r.client.XAdd(ctx, a)
 }
 
 func (r *RedisCache) Expire(ctx context.Context, key string, expiration time.Duration) error {

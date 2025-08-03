@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,9 @@ import (
 )
 
 func main() {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// 加载配置
 	cfg, err := config.LoadConfig()
 	if err != nil {
@@ -31,7 +35,7 @@ func main() {
 	defer setup.CloseMySQLDB() // 确保在 main 函数退出时关闭数据库连接
 
 	// 初始化 Redis 连接
-	setup.InitRedis(cfg)
+	setup.InitRedis(ctx, cfg)
 	defer setup.CloseRedis()
 
 	// 初始化 MinIO 客户端

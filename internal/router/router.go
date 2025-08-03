@@ -76,14 +76,15 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 			userGroup.GET("/me", handlers.GetUserProfile(userService))
 		}
 
+		//初始化数据访问接口和服务层接口
+		cacheService := cache.NewRedisCache(routerCfg.redisClient)
+		fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
+		userRepo := repositories.NewUserRepository(routerCfg.db)
+		fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
+
 		// 文件相关路由
 		fileGroup := authenticated.Group("/files")
 		{
-
-			cacheService := cache.NewRedisCache(routerCfg.redisClient)
-			fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
-			userRepo := repositories.NewUserRepository(routerCfg.db)
-			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
 
 			fileGroup.GET("/", handlers.ListUserFiles(fileService, routerCfg.cfg))
 			fileGroup.GET("/:file_id", handlers.GetSpecificFile(fileService, routerCfg.cfg))
@@ -102,11 +103,7 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		// 分享相关路由
 		shareGroup := authenticated.Group("/shares")
 		{
-			cacheService := cache.NewRedisCache(routerCfg.redisClient)
 			shareRepo := repositories.NewShareRepository(routerCfg.db)
-			fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
-			userRepo := repositories.NewUserRepository(routerCfg.db)
-			fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
 			shareService := services.NewShareService(shareRepo, fileRepo, fileService, routerCfg.cfg)
 
 			shareGroup.GET("/:share_uuid/details", handlers.GetShareDetails(shareService, routerCfg.cfg))

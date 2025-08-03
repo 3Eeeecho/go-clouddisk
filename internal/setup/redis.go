@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache/consumer"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -12,7 +13,7 @@ import (
 
 var RedisClientGlobal *redis.Client
 
-func InitRedis(cfg *config.Config) {
+func InitRedis(ctx context.Context, cfg *config.Config) {
 	RedisClientGlobal = redis.NewClient(&redis.Options{
 		Addr:         cfg.Redis.Addr,
 		Password:     cfg.Redis.Password,
@@ -28,6 +29,12 @@ func InitRedis(cfg *config.Config) {
 		logger.Fatal("Failed to connect to Redis", zap.Error(err))
 	}
 	logger.Info("Connected to Redis successfully!")
+
+	//启动消费者
+	logger.Info("Starting cache update consumer...")
+	go consumer.StartCacheUpdateConsumer(ctx, RedisClientGlobal)
+	logger.Info("Starting cache path Invalidation consumer...")
+	go consumer.StartPathInvalidationConsumer(ctx, DB, RedisClientGlobal)
 }
 
 func CloseRedis() {
