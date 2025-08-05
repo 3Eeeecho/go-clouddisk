@@ -15,7 +15,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
-	"github.com/3Eeeecho/go-clouddisk/internal/services"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/explorer"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -29,7 +29,7 @@ import (
 // @Success 200 {object} xerr.Response "文件列表"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/ [get]
-func GetSpecificFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func GetSpecificFile(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
@@ -66,7 +66,7 @@ func GetSpecificFile(fileService services.FileService, cfg *config.Config) gin.H
 // @Success 200 {object} xerr.Response "文件列表"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/ [get]
-func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func ListUserFiles(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
@@ -110,7 +110,7 @@ func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.Han
 // @Success 201 {object} xerr.Response "上传成功"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/upload [post]
-func UploadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func UploadFile(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 获取用户ID
 		currentUserID, ok := utils.GetUserIDFromContext(c)
@@ -209,7 +209,7 @@ type CreateFolderRequest struct {
 // @Success 201 {object} xerr.Response "创建成功"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/folder [post]
-func CreateFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func CreateFolder(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
@@ -257,7 +257,7 @@ func CreateFolder(fileService services.FileService, cfg *config.Config) gin.Hand
 // @Success 200 {file} file "文件内容"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/download/{file_id} [get]
-func DownloadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func DownloadFile(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fileIDStr := c.Param("file_id")
 		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
@@ -272,7 +272,7 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 		}
 
 		// 调用服务层，并传入 context
-		file, reader, err := fileService.DownloadFile(c.Request.Context(), currentUserID, fileID) // <--- 传入 c.Request.Context()
+		file, reader, err := fileService.Download(c.Request.Context(), currentUserID, fileID) // <--- 传入 c.Request.Context()
 		if err != nil {
 			if strings.Contains(err.Error(), "文件未找到") || strings.Contains(err.Error(), "物理文件在云存储中未找到") {
 				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -317,7 +317,7 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Failure 404 {object} xerr.Response "文件夹未找到"
 // @Router /api/v1/files/download/folder/{id} [get]
-func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func DownloadFolder(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		userID, exists := c.Get("userID") // 从 AuthMiddleware 获取 userID
 		if !exists {
@@ -335,7 +335,7 @@ func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.Ha
 			return
 		}
 
-		folder, zipReader, err := fileService.DownloadFolder(context.Background(), currentUserID, folderID)
+		folder, zipReader, err := fileService.Download(context.Background(), currentUserID, folderID)
 		if err != nil {
 			if strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "access denied") {
 				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -387,7 +387,7 @@ func DownloadFolder(fileService services.FileService, cfg *config.Config) gin.Ha
 // @Success 200 {object} xerr.Response "删除成功"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/softdelete/{file_id} [delete]
-func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func SoftDeleteFile(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fileIDStr := c.Param("file_id")
 		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
@@ -425,7 +425,7 @@ func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.Ha
 // @Success 200 {object} xerr.Response "删除成功"
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Router /api/v1/files/permanentdelete/{file_id} [delete]
-func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
+func PermanentDeleteFile(fileService explorer.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
@@ -468,7 +468,7 @@ func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) g
 // @Success 200 {object} xerr.Response "获取成功"
 // @Failure 500 {object} xerr.Response "内部错误"
 // @Router /api/v1/files/recyclebin [get]
-func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
+func ListRecycleBinFiles(fileService explorer.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
@@ -495,7 +495,7 @@ func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
 // @Failure 403 {object} xerr.Response "权限不足"
 // @Failure 409 {object} xerr.Response "原位置已存在同名文件"
 // @Router /api/v1/files/restore/{file_id} [post]
-func RestoreFile(fileService services.FileService) gin.HandlerFunc {
+func RestoreFile(fileService explorer.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
@@ -508,8 +508,6 @@ func RestoreFile(fileService services.FileService) gin.HandlerFunc {
 			xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
 			return
 		}
-
-		// 不再需要解析请求体
 
 		err = fileService.RestoreFile(currentUserID, fileID)
 		if err != nil {
@@ -553,7 +551,7 @@ type RenameFileRequest struct {
 // @Failure 403 {object} xerr.Response "权限不足"
 // @Failure 404 {object} xerr.Response "文件未找到"
 // @Router /api/v1/files/rename/{id} [put]
-func RenameFile(fileService services.FileService) gin.HandlerFunc {
+func RenameFile(fileService explorer.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		fileIDStr := c.Param("id")
 		fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
@@ -631,7 +629,7 @@ type MoveFileRequest struct {
 // @Failure 409 {object} xerr.Response "目标位置已存在同名文件/文件夹"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/files/move [post]
-func MoveFile(fileService services.FileService) gin.HandlerFunc {
+func MoveFile(fileService explorer.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req MoveFileRequest
 		if err := c.ShouldBindJSON(&req); err != nil {

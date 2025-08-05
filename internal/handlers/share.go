@@ -12,7 +12,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
-	"github.com/3Eeeecho/go-clouddisk/internal/services"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/share"
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
@@ -42,7 +42,7 @@ type ShareCheckPasswordRequest struct {
 // @Failure 409 {object} xerr.Response "文件已存在有效分享链接"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/shares [post]
-func CreateShare(shareService services.ShareService, cfg *config.Config) gin.HandlerFunc {
+func CreateShare(shareService share.ShareService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var req CreateShareRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -91,7 +91,7 @@ func CreateShare(shareService services.ShareService, cfg *config.Config) gin.Han
 // @Failure 403 {object} xerr.Response "分享链接需要密码"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /share/{share_uuid}/details [get]
-func GetShareDetails(shareService services.ShareService, cfg *config.Config) gin.HandlerFunc {
+func GetShareDetails(shareService share.ShareService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		shareUUID := c.Param("share_uuid")
 		if shareUUID == "" {
@@ -139,7 +139,7 @@ func GetShareDetails(shareService services.ShareService, cfg *config.Config) gin
 // @Failure 403 {object} xerr.Response "密码不正确或链接已过期"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /share/{share_uuid}/verify [post]
-func VerifySharePassword(shareService services.ShareService, cfg *config.Config) gin.HandlerFunc {
+func VerifySharePassword(shareService share.ShareService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		shareUUID := c.Param("share_uuid")
@@ -184,7 +184,7 @@ func VerifySharePassword(shareService services.ShareService, cfg *config.Config)
 // @Failure 403 {object} xerr.Response "分享链接需要密码或密码不正确"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /share/{share_uuid}/download [get]
-func DownloadSharedContent(shareService services.ShareService, cfg *config.Config) gin.HandlerFunc {
+func DownloadSharedContent(shareService share.ShareService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		shareUUID := c.Param("share_uuid")
@@ -276,7 +276,7 @@ func DownloadSharedContent(shareService services.ShareService, cfg *config.Confi
 // @Failure 401 {object} xerr.Response "未授权"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/shares/my [get]
-func ListUserShares(shareService services.ShareService, cfg *config.Config) gin.HandlerFunc {
+func ListUserShares(shareService share.ShareService, cfg *config.Config) gin.HandlerFunc {
 
 	return func(c *gin.Context) {
 
@@ -323,7 +323,7 @@ func ListUserShares(shareService services.ShareService, cfg *config.Config) gin.
 // @Failure 404 {object} xerr.Response "分享链接不存在"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/shares/{share_id} [delete]
-func RevokeShare(shareService services.ShareService, cfg *config.Config) gin.HandlerFunc {
+func RevokeShare(shareService share.ShareService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 
 		shareIDStr := c.Param("share_id")

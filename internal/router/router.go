@@ -11,7 +11,9 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
-	"github.com/3Eeeecho/go-clouddisk/internal/services"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/admin"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/explorer"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/share"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	swaggerFiles "github.com/swaggo/files"
@@ -71,7 +73,7 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		userGroup := authenticated.Group("/users")
 		{
 			userRepo := repositories.NewUserRepository(routerCfg.db)
-			userService := services.NewUserService(userRepo)
+			userService := admin.NewUserService(userRepo)
 
 			userGroup.GET("/me", handlers.GetUserProfile(userService))
 		}
@@ -80,7 +82,9 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		cacheService := cache.NewRedisCache(routerCfg.redisClient)
 		fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
 		userRepo := repositories.NewUserRepository(routerCfg.db)
-		fileService := services.NewFileService(fileRepo, userRepo, routerCfg.cfg, routerCfg.db, routerCfg.fileStorageService, cacheService)
+		domainService := explorer.NewFileDomainService(fileRepo)
+		transactionManager := explorer.NewTransactionManager(routerCfg.db)
+		fileService := explorer.NewFileService(fileRepo, userRepo, domainService, transactionManager, routerCfg.fileStorageService, cacheService, routerCfg.cfg)
 
 		// 文件相关路由
 		fileGroup := authenticated.Group("/files")
@@ -104,7 +108,7 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		shareGroup := authenticated.Group("/shares")
 		{
 			shareRepo := repositories.NewShareRepository(routerCfg.db)
-			shareService := services.NewShareService(shareRepo, fileRepo, fileService, routerCfg.cfg)
+			shareService := share.NewShareService(shareRepo, fileRepo, fileService, domainService, routerCfg.cfg)
 
 			shareGroup.GET("/:share_uuid/details", handlers.GetShareDetails(shareService, routerCfg.cfg))
 			shareGroup.POST("/:share_uuid/verify", handlers.VerifySharePassword(shareService, routerCfg.cfg))

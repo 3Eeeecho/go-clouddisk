@@ -1,4 +1,4 @@
-package services
+package share
 
 import (
 	"context"
@@ -11,6 +11,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/explorer"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"golang.org/x/crypto/bcrypt"
@@ -26,19 +27,21 @@ type ShareService interface {
 }
 
 type shareService struct {
-	shareRepo   repositories.ShareRepository
-	fileRepo    repositories.FileRepository
-	fileService FileService // 引入 FileService，用于复用文件内容获取和文件夹打包逻辑
-	cfg         *config.Config
+	shareRepo     repositories.ShareRepository
+	fileRepo      repositories.FileRepository
+	fileService   explorer.FileService // 引入 FileService，用于复用文件内容获取和文件夹打包逻辑
+	domainService explorer.FileDomainService
+	cfg           *config.Config
 }
 
 // NewShareService creates a new ShareService instance.
-func NewShareService(shareRepo repositories.ShareRepository, fileRepo repositories.FileRepository, fileService FileService, cfg *config.Config) ShareService {
+func NewShareService(shareRepo repositories.ShareRepository, fileRepo repositories.FileRepository, fileService explorer.FileService, domainService explorer.FileDomainService, cfg *config.Config) ShareService {
 	return &shareService{
-		shareRepo:   shareRepo,
-		fileRepo:    fileRepo,
-		fileService: fileService,
-		cfg:         cfg,
+		shareRepo:     shareRepo,
+		fileRepo:      fileRepo,
+		fileService:   fileService,
+		domainService: domainService,
+		cfg:           cfg,
 	}
 }
 
@@ -148,6 +151,7 @@ func (s *shareService) GetShareByUUID(ctx context.Context, uuid string, provided
 	logger.Info("GetShareByUUID: 分享链接访问成功", zap.Uint64("shareID", share.ID))
 	return share, nil
 }
+
 func (s *shareService) ListUserShares(userID uint64, page, pageSize int) ([]models.Share, int64, error) {
 	logger.Debug("ListUserShares called", zap.Uint64("userID", userID), zap.Int("page", page), zap.Int("pageSize", pageSize))
 	shares, total, err := s.shareRepo.FindAllByUserID(userID, page, pageSize)
@@ -157,6 +161,7 @@ func (s *shareService) ListUserShares(userID uint64, page, pageSize int) ([]mode
 	}
 	return shares, total, nil
 }
+
 func (s *shareService) RevokeShare(userID uint64, shareID uint64) error {
 	logger.Debug("RevokeShare called", zap.Uint64("userID", userID), zap.Uint64("shareID", shareID))
 
@@ -188,6 +193,7 @@ func (s *shareService) RevokeShare(userID uint64, shareID uint64) error {
 	logger.Info("RevokeShare: 分享链接撤销成功", zap.Uint64("shareID", shareID), zap.Uint64("userID", userID))
 	return nil
 }
+
 func (s *shareService) GetSharedFileContent(ctx context.Context, share *models.Share) (io.ReadCloser, error) {
 	if share.File == nil {
 		// This should ideally be preloaded by shareRepo.FindByUUID
@@ -202,14 +208,15 @@ func (s *shareService) GetSharedFileContent(ctx context.Context, share *models.S
 		return nil, errors.New("分享的是文件夹，请使用文件夹下载接口")
 	}
 
-	// 复用 FileService 的 GetFileContentReader 方法
-	reader, err := s.fileService.GetFileContentReader(ctx, *share.File)
-	if err != nil {
-		logger.Error("GetSharedFileContent: 获取文件内容读取器失败",
-			zap.Uint64("fileID", share.File.ID), zap.String("shareUUID", share.UUID), zap.Error(err))
-		return nil, fmt.Errorf("获取分享文件内容失败: %w", err)
-	}
-	return reader, nil
+	// TODO 修复
+	// // 复用 FileService 的 GetFileContentReader 方法
+	// reader, err := s.domainService.GetFileContentReader(ctx, *share.File)
+	// if err != nil {
+	// 	logger.Error("GetSharedFileContent: 获取文件内容读取器失败",
+	// 		zap.Uint64("fileID", share.File.ID), zap.String("shareUUID", share.UUID), zap.Error(err))
+	// 	return nil, fmt.Errorf("获取分享文件内容失败: %w", err)
+	// }
+	return nil, nil
 }
 
 // 获取分享文件的内容
@@ -227,8 +234,7 @@ func (s *shareService) GetSharedFolderContent(ctx context.Context, share *models
 	}
 
 	// 复用 FileService 的 DownloadFolder 逻辑，但这里我们只需要 Reader
-	// 注意：DownloadFolder 返回的第一个参数是 *models.File，第二个才是 io.ReadCloser
-	_, reader, err := s.fileService.DownloadFolder(ctx, share.UserID, share.File.ID) // 注意这里传递 share.UserID
+	_, reader, err := s.fileService.Download(ctx, share.UserID, share.File.ID) // 注意这里传递 share.UserID
 	if err != nil {
 		logger.Error("GetSharedFolderContent: 打包分享文件夹失败",
 			zap.Uint64("folderID", share.File.ID), zap.String("shareUUID", share.UUID), zap.Error(err))

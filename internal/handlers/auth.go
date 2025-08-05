@@ -6,7 +6,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
-	"github.com/3Eeeecho/go-clouddisk/internal/services"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/admin"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -35,7 +35,7 @@ type LoginRequest struct {
 // @Router /api/v1/auth/register [post]
 func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
-	authService := services.NewAuthService(userRepo, cfg)
+	authService := admin.NewAuthService(userRepo, cfg)
 	return func(c *gin.Context) {
 		var req RegisterRequest
 		if err := c.ShouldBind(&req); err != nil {
@@ -80,7 +80,7 @@ func Register(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 // @Router /api/v1/auth/login [post]
 func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 	userRepo := repositories.NewUserRepository(db)
-	authService := services.NewAuthService(userRepo, cfg)
+	authService := admin.NewAuthService(userRepo, cfg)
 	return func(c *gin.Context) {
 		var req LoginRequest
 		if err := c.ShouldBindJSON(&req); err != nil {

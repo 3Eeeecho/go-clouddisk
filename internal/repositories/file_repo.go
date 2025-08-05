@@ -36,7 +36,7 @@ type FileRepository interface {
 	FindChildrenByPathPrefix(userID uint64, pathPrefix string) ([]models.File, error)
 	CountFilesInStorage(ossKey string, md5Hash string, excludeFileID uint64) (int64, error)
 
-	UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldPathPrefix, newPathPrefix string) error
+	UpdateFilesPathInBatch(userID uint64, oldPathPrefix, newPathPrefix string) error
 	Update(file *models.File) error
 	SoftDelete(id uint64) error      // 软删除文件
 	PermanentDelete(id uint64) error // 永久删除文件
@@ -572,9 +572,9 @@ func (r *fileRepository) FindChildrenByPathPrefix(userID uint64, pathPrefix stri
 // 异步缓存失效
 // 思路：在批量更新数据库后，不立即同步删除 Redis 缓存，
 // 而是发送一个消息到消息队列（如 RabbitMQ），由一个独立的消费者进程异步地去处理缓存失效逻辑。
-func (r *fileRepository) UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldPathPrefix, newPathPrefix string) error {
+func (r *fileRepository) UpdateFilesPathInBatch(userID uint64, oldPathPrefix, newPathPrefix string) error {
 	// 使用 REPLACE SQL 函数进行字符串替换
-	if err := tx.Model(&models.File{}).
+	if err := r.db.Model(&models.File{}).
 		Where("user_id = ? AND path LIKE ?", userID, oldPathPrefix+"%").
 		Update("path", gorm.Expr("REPLACE(path, ?, ?)", oldPathPrefix, newPathPrefix)).Error; err != nil {
 		return err

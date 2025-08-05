@@ -10,7 +10,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger" // 确保你的日志包路径正确
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
-	"github.com/3Eeeecho/go-clouddisk/internal/services"
+	"github.com/3Eeeecho/go-clouddisk/internal/services/admin"
 )
 
 // GetUserInfo 处理获取已认证用户资料的请求。
@@ -25,7 +25,7 @@ import (
 // @Failure 404 {object} xerr.Response "用户未找到"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/user/me [get]
-func GetUserProfile(userService services.UserService) gin.HandlerFunc {
+func GetUserProfile(userService admin.UserService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
