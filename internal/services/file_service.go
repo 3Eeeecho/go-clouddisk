@@ -27,19 +27,24 @@ import (
 
 type FileService interface {
 	GetFileByID(userID uint64, fileID uint64) (*models.File, error)
+	GetFileByMD5Hash(userID uint64, md5Hash string) (*models.File, error)
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
+
 	UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
 	DownloadFile(ctx context.Context, userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)     // 下载文件
 	DownloadFolder(ctx context.Context, userID uint64, folderID uint64) (*models.File, io.ReadCloser, error) //下载文件夹
+
 	SoftDeleteFile(userID uint64, fileID uint64) error
 	PermanentDeleteFile(userID uint64, fileID uint64) error
+
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
-	RestoreFile(userID uint64, fileID uint64) error                                    // 从回收站恢复文件
+	RestoreFile(userID uint64, fileID uint64) error // 从回收站恢复文件
+
 	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error) //修改文件名
 	MoveFile(userID uint64, fileID uint64, parentFolderID *uint64) (*models.File, error)
 
-	//helpers
+	//辅助函数
 	GetFileContentReader(ctx context.Context, file models.File) (io.ReadCloser, error)
 }
 
@@ -86,6 +91,29 @@ func (s *fileService) GetFileByID(userID uint64, fileID uint64) (*models.File, e
 	}
 
 	logger.Info("GetFilesByUserID success", zap.Uint64("userID", userID), zap.Any("fileID", fileID))
+	return file, nil
+}
+
+func (s *fileService) GetFileByMD5Hash(userID uint64, md5Hash string) (*models.File, error) {
+	logger.Debug("GetFileByMD5Hash called", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash))
+
+	file, err := s.fileRepo.FindFileByMD5Hash(md5Hash)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Error("Not found file", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash), zap.Error(err))
+			return nil, fmt.Errorf("not found file")
+		}
+		logger.Error("Failed to get file for user", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash), zap.Error(err))
+		return nil, fmt.Errorf("failed to get file for user %d , md5Hash:%s, err: %w", userID, md5Hash, err)
+	}
+
+	// 检查文件状态
+	err = s.checkFile(file, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	logger.Info("GetFilesByMD5Hash success", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash))
 	return file, nil
 }
 

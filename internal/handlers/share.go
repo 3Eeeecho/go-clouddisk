@@ -9,8 +9,8 @@ import (
 	"strings"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
@@ -50,7 +50,7 @@ func CreateShare(shareService services.ShareService, cfg *config.Config) gin.Han
 			return
 		}
 
-		userID, ok := ginutils.GetUserIDFromContext(c)
+		userID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return // 错误已在 GetUserIDFromContext 中处理
 		}
@@ -292,7 +292,7 @@ func ListUserShares(shareService services.ShareService, cfg *config.Config) gin.
 			pageSize = 10
 		}
 
-		userID, ok := ginutils.GetUserIDFromContext(c)
+		userID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -333,7 +333,7 @@ func RevokeShare(shareService services.ShareService, cfg *config.Config) gin.Han
 			return
 		}
 
-		userID, ok := ginutils.GetUserIDFromContext(c)
+		userID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}

@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 	"github.com/gin-gonic/gin"
@@ -31,7 +31,7 @@ import (
 // @Router /api/v1/files/ [get]
 func GetSpecificFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -68,7 +68,7 @@ func GetSpecificFile(fileService services.FileService, cfg *config.Config) gin.H
 // @Router /api/v1/files/ [get]
 func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -113,7 +113,7 @@ func ListUserFiles(fileService services.FileService, cfg *config.Config) gin.Han
 func UploadFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 获取用户ID
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -211,7 +211,7 @@ type CreateFolderRequest struct {
 // @Router /api/v1/files/folder [post]
 func CreateFolder(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -266,7 +266,7 @@ func DownloadFile(fileService services.FileService, cfg *config.Config) gin.Hand
 			return
 		}
 
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -395,7 +395,7 @@ func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.Ha
 			xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid file ID format")
 		}
 
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -427,7 +427,7 @@ func SoftDeleteFile(fileService services.FileService, cfg *config.Config) gin.Ha
 // @Router /api/v1/files/permanentdelete/{file_id} [delete]
 func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return // 辅助函数已经处理了错误响应
 		}
@@ -470,7 +470,7 @@ func PermanentDeleteFile(fileService services.FileService, cfg *config.Config) g
 // @Router /api/v1/files/recyclebin [get]
 func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -497,7 +497,7 @@ func ListRecycleBinFiles(fileService services.FileService) gin.HandlerFunc {
 // @Router /api/v1/files/restore/{file_id} [post]
 func RestoreFile(fileService services.FileService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -563,7 +563,7 @@ func RenameFile(fileService services.FileService) gin.HandlerFunc {
 			return
 		}
 
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}
@@ -640,7 +640,7 @@ func MoveFile(fileService services.FileService) gin.HandlerFunc {
 			return
 		}
 
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			// GetUserIDFromContext 应该会返回一个错误响应，这里只是双重检查
 			return

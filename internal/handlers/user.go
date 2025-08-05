@@ -7,8 +7,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/ginutils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger" // 确保你的日志包路径正确
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/services"
 )
@@ -27,7 +27,7 @@ import (
 // @Router /api/v1/user/me [get]
 func GetUserProfile(userService services.UserService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		currentUserID, ok := ginutils.GetUserIDFromContext(c)
+		currentUserID, ok := utils.GetUserIDFromContext(c)
 		if !ok {
 			return
 		}

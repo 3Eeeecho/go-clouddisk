@@ -1,4 +1,4 @@
-package ginutils
+package utils
 
 import (
 	"net/http"

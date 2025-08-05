@@ -569,8 +569,8 @@ func (r *fileRepository) FindChildrenByPathPrefix(userID uint64, pathPrefix stri
 }
 
 // UpdateFilesPathInBatch 批量更新文件的 Path 字段
-// TODO 异步缓存失效
-// 思路： 在批量更新数据库后，不立即同步删除 Redis 缓存，
+// 异步缓存失效
+// 思路：在批量更新数据库后，不立即同步删除 Redis 缓存，
 // 而是发送一个消息到消息队列（如 RabbitMQ），由一个独立的消费者进程异步地去处理缓存失效逻辑。
 func (r *fileRepository) UpdateFilesPathInBatch(tx *gorm.DB, userID uint64, oldPathPrefix, newPathPrefix string) error {
 	// 使用 REPLACE SQL 函数进行字符串替换
@@ -759,10 +759,9 @@ func (r *fileRepository) saveFilesToCacheList(ctx context.Context, cacheKey stri
 	// 执行所有管道命令
 	_, execErr := pipe.Exec(ctx)
 	if execErr != nil {
-		//TODO 如果数据库更新成功,但是管道执行失败,需要考虑使用消息队列重试更新缓存
-
-		logger.Error("saveFilesToCacheList: Failed to execute Redis pipeline for caching list", zap.String("key", cacheKey), zap.Error(execErr))
-		return fmt.Errorf("failed to save files to cache: %w", execErr)
+		// 缓存回填逻辑，不应阻塞用户获取数据的请求。
+		// 可以选择忽略这个错误，让下次的读请求重新回源数据库，确保用户拿到正确数据。
+		logger.Error("saveFilesToCacheList: Failed to execute Redis pipeline for caching list. Cache might be inconsistent.", zap.String("key", cacheKey), zap.Error(execErr))
 	}
 	return nil
 }
