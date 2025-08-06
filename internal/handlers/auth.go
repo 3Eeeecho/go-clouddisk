@@ -114,6 +114,7 @@ func Login(db *gorm.DB, cfg *config.Config) gin.HandlerFunc {
 // @Router /api/v1/auth/refresh [post]
 func RefreshToken(cfg *config.Config) gin.HandlerFunc {
 	return func(c *gin.Context) {
+		//TODO
 		xerr.Success(c, http.StatusOK, "Refresh token endpoint - To be implemented", nil)
 	}
 }

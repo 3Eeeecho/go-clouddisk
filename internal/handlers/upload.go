@@ -13,6 +13,17 @@ import (
 )
 
 // InitUploadHandler 处理上传初始化请求
+// @Summary 初始化文件上传
+// @Description 创建上传会话并返回上传参数
+// @Tags 文件上传
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body models.UploadInitRequest true "上传初始化参数"
+// @Success 200 {object} xerr.Response "上传初始化成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
+// @Router /api/v1/upload/init [post]
 func InitUploadHandler(uploadService explorer.UploadService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
@@ -35,6 +46,19 @@ func InitUploadHandler(uploadService explorer.UploadService) gin.HandlerFunc {
 }
 
 // UploadChunkHandler 处理分片上传请求
+// @Summary 上传文件分片
+// @Description 上传文件的一个分片
+// @Tags 文件上传
+// @Accept multipart/form-data
+// @Produce json
+// @Security BearerAuth
+// @Param chunk formData file true "文件分片内容"
+// @Param file_hash formData string true "文件哈希值"
+// @Param chunk_index formData int true "分片索引"
+// @Success 200 {object} xerr.Response "分片上传成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
+// @Router /api/v1/upload/chunk [post]
 func UploadChunkHandler(uploadService explorer.UploadService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
@@ -88,6 +112,17 @@ func UploadChunkHandler(uploadService explorer.UploadService) gin.HandlerFunc {
 }
 
 // CompleteUploadHandler 处理分片合并请求
+// @Summary 完成文件上传
+// @Description 合并所有分片完成文件上传
+// @Tags 文件上传
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body models.UploadCompleteRequest true "上传完成参数"
+// @Success 200 {object} xerr.Response "文件上传完成"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
+// @Router /api/v1/upload/complete [post]
 func CompleteUploadHandler(uploadService explorer.UploadService) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		currentUserID, ok := utils.GetUserIDFromContext(c)
