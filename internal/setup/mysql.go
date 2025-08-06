@@ -41,7 +41,7 @@ func AutoMigrate() {
 		&models.User{},
 		&models.File{},
 		&models.Share{},
-		&models.UploadTask{},
+		&models.Chunk{},
 	)
 	if err != nil {
 		logger.Fatal("Failed to auto migrate database tables", zap.Error(err))

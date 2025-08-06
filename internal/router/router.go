@@ -118,6 +118,16 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 			shareGroup.GET("/my", handlers.ListUserShares(shareService, routerCfg.cfg))
 			shareGroup.DELETE("/:share_id", handlers.RevokeShare(shareService, routerCfg.cfg))
 		}
+
+		// 注册断点续传路由
+		uploadRoutes := authenticated.Group("/uploads")
+		{
+			chunkRepo := repositories.NewChunkRepository(routerCfg.db, cacheService)
+			uploadService := explorer.NewUploadService(fileRepo, chunkRepo, transactionManager, routerCfg.fileStorageService, cacheService, routerCfg.cfg)
+			uploadRoutes.POST("/init", handlers.InitUploadHandler(uploadService))
+			uploadRoutes.POST("/chunk", handlers.UploadChunkHandler(uploadService))
+			uploadRoutes.POST("/complete", handlers.CompleteUploadHandler(uploadService))
+		}
 	}
 
 	router.NoRoute(func(c *gin.Context) {
