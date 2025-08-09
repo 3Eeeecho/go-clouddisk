@@ -2,4 +2,5 @@
 /uploads
 /logs
 /.VSCodeCounter
-/web
+/frontend
+/internal/pkg/test/

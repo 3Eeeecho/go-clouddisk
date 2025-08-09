@@ -24,7 +24,7 @@ aliyun_oss:
   use_ssl: true
 
 rabbitmq:
-  url: "amqp://guest:guest@rabbitmq:5672/"
+  url: "amqp://guest:guest@localhost:5672/"
 
 jwt:
   secret_key: "MTg5ODg2OTE1MjAyNS8zLzEyIDE4OjU0OjU3"

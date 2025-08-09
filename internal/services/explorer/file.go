@@ -2,20 +2,15 @@ package explorer
 
 import (
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
@@ -35,7 +30,7 @@ type FileService interface {
 	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
 
 	//文件上传
-	UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
+	//UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 
 	// 文件下载
 	Download(ctx context.Context, userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)
@@ -55,11 +50,9 @@ type FileService interface {
 
 type fileService struct {
 	fileRepo           repositories.FileRepository
-	userRepo           repositories.UserRepository
 	domainService      FileDomainService  // 业务逻辑
 	transactionManager TransactionManager // 事务管理
 	StorageService     storage.StorageService
-	cacheService       *cache.RedisCache
 	cfg                *config.Config
 }
 
@@ -68,21 +61,16 @@ var _ FileService = (*fileService)(nil)
 // NewFileService 创建一个新的文件服务实例
 func NewFileService(
 	fileRepo repositories.FileRepository,
-	userRepo repositories.UserRepository,
 	domainService FileDomainService,
 	transactionManager TransactionManager,
 	storageService storage.StorageService,
-	cacheService *cache.RedisCache,
 	cfg *config.Config,
-
 ) FileService {
 	return &fileService{
 		fileRepo:           fileRepo,
-		userRepo:           userRepo,
 		domainService:      domainService,
 		transactionManager: transactionManager,
 		StorageService:     storageService,
-		cacheService:       cacheService,
 		cfg:                cfg,
 	}
 }
@@ -348,197 +336,6 @@ func (s *fileService) MoveFile(userID uint64, fileID uint64, targetParentID *uin
 	}
 
 	return fileToMove, nil
-}
-
-func (s *fileService) UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error) {
-	logger.Debug("UploadFile called", zap.Uint64("userID", userID), zap.String("originalName", originalName), zap.Uint64("filesize", filesize), zap.Any("parentFolderID", parentFolderID))
-
-	targetParentFolder, err := s.domainService.CheckDirectory(userID, parentFolderID)
-	if err != nil {
-		return nil, err
-	}
-
-	// 用于存储父文件夹的完整路径，默认为根目录的路径 "/"
-	var parentPath string
-
-	// 1. 检查父文件夹是否存在和权限
-	if parentFolderID != nil {
-		parentPath = targetParentFolder.Path + targetParentFolder.FileName + "/"
-	} else {
-		parentPath = "/"
-	}
-
-	// 2. 计算文件内容的哈希值，用于去重
-	md5Hasher := md5.New()
-	md5CopyBytes, err := io.Copy(md5Hasher, fileContent)
-	if err != nil {
-		logger.Error("Failed to compute file MD5 hash", zap.String("file", originalName), zap.Error(err))
-		return nil, fmt.Errorf("failed to compute file MD5 hash: %w", err)
-	}
-	fileMD5Hash := hex.EncodeToString(md5Hasher.Sum(nil))
-	logger.Info("File MD5 calculated", zap.String("file", originalName), zap.Uint64("size", filesize), zap.Int64("md5CopyBytes", md5CopyBytes))
-
-	// 重要：将 fileContent 的读取位置重置到文件开头，以便再次读取用于写入物理存储
-	// 确保 fileContent 实现了 io.Seeker 接口（在 Handler 中我们使用了临时文件，它实现了）
-	if seeker, ok := fileContent.(io.Seeker); ok {
-		_, err := seeker.Seek(0, 0)
-		if err != nil {
-			logger.Error("Failed to reset file reader position", zap.String("file", originalName), zap.Error(err))
-			return nil, fmt.Errorf("failed to reset file reader position: %w", err)
-		}
-	} else {
-		logger.Error("fileContent reader is not seekable, cannot re-read for storage", zap.String("file", originalName))
-		return nil, errors.New("fileContent reader is not seekable, cannot re-read for storage")
-	}
-
-	// 3. 检查文件是否已存在（秒传逻辑）
-	existingFileByMD5, err := s.fileRepo.FindFileByMD5Hash(fileMD5Hash)
-	if err == nil && existingFileByMD5 != nil {
-		logger.Info("Fast upload: file already exists, creating new record", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
-		// 文件内容已存在，执行秒传：直接创建新的文件记录指向旧的物理文件
-		// 注意：这里的 UUID 和 OssKey/OssBucket 应该引用现有的物理文件信息
-		// 我们假设 existingFileByMD5 包含了正确的 OSS 相关信息
-		newFileRecord := &models.File{
-			UUID:           uuid.New().String(), // 每个文件记录有自己的 UUID
-			UserID:         userID,
-			ParentFolderID: parentFolderID,
-			FileName:       originalName, // 用户原始文件名'
-			Path:           parentPath,
-			IsFolder:       0, // 0表示文件
-			Size:           existingFileByMD5.Size,
-			MimeType:       &mimeType,
-			OssBucket:      existingFileByMD5.OssBucket, // 引用现有物理文件的 bucket
-			OssKey:         existingFileByMD5.OssKey,    // 引用现有物理文件的 key
-			MD5Hash:        &fileMD5Hash,
-			Status:         1,
-			CreatedAt:      time.Now(),
-			UpdatedAt:      time.Now(),
-		}
-		if err := s.fileRepo.Create(newFileRecord); err != nil {
-			logger.Error("Error creating new file record for existing file", zap.String("file", originalName), zap.Error(err))
-			return nil, fmt.Errorf("failed to create new file record for existing file: %w", err)
-		}
-		logger.Info("Fast upload successful for file", zap.String("file", originalName), zap.Uint64("newRecordID", newFileRecord.ID))
-		return newFileRecord, nil //秒传成功
-	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-		// 查找文件 MD5 时发生其他数据库错误
-		logger.Error("Error checking existing file by MD5 hash", zap.String("md5Hash", fileMD5Hash), zap.Error(err))
-		return nil, fmt.Errorf("failed to check existing file by MD5 hash: %w", err)
-	}
-
-	// 4. 文件内容不存在，需要上传到物理存储 (MinIO/S3 或本地)
-	logger.Info("Uploading new file to storage", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
-	// 生成新的 UUID 作为文件在OSS中的唯一标识
-	// newUUID := uuid.New().String()
-
-	//提取原始拓展名
-	extension := filepath.Ext(originalName)
-
-	// OssKey：文件MD5分层
-	ossKey := fmt.Sprintf("%d:%s%s", userID, fileMD5Hash, extension)
-
-	var uploadedSize int64
-	switch s.cfg.Storage.Type {
-	case "minio":
-		// 上传到 MinIO
-		logger.Info("Attempting to save physical file to MinIO",
-			zap.String("bucket", s.cfg.MinIO.BucketName),
-			zap.String("ossKey", ossKey))
-
-		info, err := s.StorageService.PutObject(context.Background(),
-			s.cfg.MinIO.BucketName,
-			ossKey,
-			fileContent,
-			int64(filesize),
-			mimeType,
-		)
-
-		if err != nil {
-			logger.Error("Failed to upload file to MinIO",
-				zap.String("ossKey", ossKey), zap.Error(err))
-			return nil, fmt.Errorf("failed to upload file to cloud storage: %w", err)
-		}
-		uploadedSize = info.Size
-		logger.Info("File uploaded to MinIO successfully",
-			zap.String("ossKey", ossKey), zap.Int64("size", uploadedSize))
-	case "local":
-		// 构造本地存储路径,使用 OssKey 作为本地文件名
-		logger.Info("show localbasepath to debug", zap.String("localBasePath", s.cfg.Storage.LocalBasePath))
-		localPath := filepath.Join(s.cfg.Storage.LocalBasePath, ossKey)
-		logger.Info("Attempting to save physical file to local disk", zap.String("path", localPath))
-
-		// 确保存储目录存在
-		err = os.MkdirAll(filepath.Dir(localPath), 0755)
-		if err != nil {
-			logger.Error("Failed to create storage directory", zap.String("path", localPath), zap.Error(err))
-			return nil, fmt.Errorf("failed to create storage directory: %w", err)
-		}
-
-		out, err := os.Create(localPath)
-		if err != nil {
-			logger.Error("Failed to create file on disk", zap.String("path", localPath), zap.Error(err))
-			return nil, fmt.Errorf("failed to create file on disk at %s: %w", localPath, err)
-		}
-		defer out.Close()
-
-		// 从 fileContent 读取并写入到物理文件
-		writtenBytes, err := io.Copy(out, fileContent)
-		logger.Info("Physical file written successfully", zap.String("path", localPath), zap.Int64("writtenBytes", writtenBytes))
-		if err != nil {
-			logger.Error("Failed to write file to disk", zap.String("path", localPath), zap.Error(err))
-			os.Remove(localPath) // 写入失败，删除不完整文件
-			return nil, fmt.Errorf("failed to write file to disk: %w", err)
-		}
-		uploadedSize = writtenBytes
-		logger.Info("Physical file written successfully to local disk", zap.String("path", localPath), zap.Int64("writtenBytes", uploadedSize))
-	default:
-		return nil, errors.New("unsupported storage type configured for upload")
-	}
-
-	// 5. 将文件元数据记录到数据库
-	logger.Debug("Saving file record to database", zap.String("file", originalName), zap.String("md5", fileMD5Hash))
-	fileRecord := &models.File{
-		UUID:           uuid.New().String(),
-		UserID:         userID,
-		ParentFolderID: parentFolderID,
-		FileName:       originalName,
-		Path:           parentPath,
-		IsFolder:       0, // 0表示文件
-		Size:           uint64(uploadedSize),
-		MimeType:       &mimeType,               // 传入指针
-		OssBucket:      &s.cfg.MinIO.BucketName, // 假设使用 MinIO 的 bucket name，即使是本地存储
-		OssKey:         &ossKey,                 // 传入指针
-		MD5Hash:        &fileMD5Hash,            // 传入指针
-		Status:         1,                       // 正常状态
-		CreatedAt:      time.Now(),
-		UpdatedAt:      time.Now(),
-	}
-
-	if err := s.fileRepo.Create(fileRecord); err != nil {
-		logger.Error("Failed to save file record to database", zap.String("file", originalName), zap.Error(err))
-		switch s.cfg.Storage.Type {
-		case "minio":
-			removeErr := s.StorageService.RemoveObject(context.Background(), s.cfg.MinIO.BucketName, ossKey)
-			if removeErr != nil {
-				logger.Error("Failed to remove MinIO object after DB save failure",
-					zap.String("ossKey", ossKey), zap.Error(removeErr))
-			} else {
-				logger.Info("Successfully removed MinIO object after DB save failure", zap.String("ossKey", ossKey))
-			}
-		case "local":
-			// 如果数据库记录失败，删除已经写入的物理文件
-			os.Remove(filepath.Join(s.cfg.Storage.LocalBasePath, ossKey))
-		}
-		return nil, fmt.Errorf("failed to save file record to database: %w", err)
-	}
-
-	logger.Info("UploadFile success",
-		zap.String("file", originalName),
-		zap.Uint64("userID", userID),
-		zap.String("md5", fileMD5Hash),
-		zap.String("storageType", s.cfg.Storage.Type),
-		zap.Stringp("ossKey", fileRecord.OssKey))
-	return fileRecord, nil
 }
 
 // 文件下载

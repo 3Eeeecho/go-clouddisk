@@ -87,25 +87,25 @@ services:
       retries: 5
       start_period: 5s
 
-  # # RabbitMQ 消息队列服务
-  # rabbitmq:
-  #   image: rabbitmq:4.1.2-management # RabbitMQ 镜像，包含管理界面
-  #   container_name: rabbitmq
-  #   restart: always
-  #   environment:
-  #     TZ: Asia/Shanghai
-  #     RABBITMQ_DEFAULT_USER: rabbitmq_user # RabbitMQ 用户
-  #     RABBITMQ_DEFAULT_PASS: rabbitmq_password # RabbitMQ 密码
-  #   ports:
-  #     - "5673:5672" # AMQP 端口
-  #     - "15673:15672" # 管理界面端口
-  #   volumes:
-  #     - rabbitmq_data:/var/lib/rabbitmq # 数据持久化
-  #   healthcheck:
-  #     test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
-  #     timeout: 10s
-  #     retries: 5
-  #     start_period: 5s
+  # RabbitMQ 消息队列服务
+  rabbitmq:
+    image: rabbitmq:4.1.2-management # RabbitMQ 镜像，包含管理界面
+    container_name: rabbitmq
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+      RABBITMQ_DEFAULT_USER: guest # RabbitMQ 用户
+      RABBITMQ_DEFAULT_PASS: guest # RabbitMQ 密码
+    ports:
+      - "5672:5672" # AMQP 端口
+      - "15672:15672" # 管理界面端口
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq # 数据持久化
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_port_connectivity"]
+      timeout: 10s
+      retries: 5
+      start_period: 5s
 
 
   # # Elasticsearch 服务

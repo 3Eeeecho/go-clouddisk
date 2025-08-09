@@ -6,6 +6,13 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	MergeStatusPending uint8 = 0
+	MergeStatusMerging uint8 = 1
+	MergeStatusSuccess uint8 = 2
+	MergeStatusFailed  uint8 = 3
+)
+
 // File 对应 files 表
 type File struct {
 	ID             uint64         `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -20,7 +27,8 @@ type File struct {
 	OssBucket      *string        `gorm:"type:varchar(64);default:null" json:"oss_bucket"`
 	OssKey         *string        `gorm:"type:varchar(255);default:null" json:"oss_key"`
 	MD5Hash        *string        `gorm:"type:varchar(32);default:null" json:"md5_hash"`
-	Status         uint8          `gorm:"type:tinyint unsigned;not null;default:1" json:"status"` // 1:正常, 0:回收站
+	Status         uint8          `gorm:"type:tinyint unsigned;not null;default:1" json:"status"`       // 1:正常, 0:回收站
+	MergeStatus    uint8          `gorm:"type:tinyint unsigned;not null;default:0" json:"merge_status"` // 0:待合并, 1:合并中, 2:合并成功, 3:合并失败
 	CreatedAt      time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt      time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
 	DeletedAt      gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`

@@ -20,16 +20,16 @@ type AuthService interface {
 
 type authService struct {
 	userRepo repositories.UserRepository
-	cfg      *config.Config
+	jwtCfg   *config.JWTConfig
 }
 
 // 确保authService实现了AuthService的方法
 var _ AuthService = (*authService)(nil)
 
-func NewAuthService(userRepo repositories.UserRepository, cfg *config.Config) AuthService {
+func NewAuthService(userRepo repositories.UserRepository, cfg *config.JWTConfig) AuthService {
 	return &authService{
 		userRepo: userRepo,
-		cfg:      cfg,
+		jwtCfg:   cfg,
 	}
 }
 
@@ -112,9 +112,9 @@ func (s *authService) LoginUser(identifier, password string) (string, error) {
 		user.ID,
 		user.Username,
 		user.Email,
-		s.cfg.JWT.SecretKey,
-		s.cfg.JWT.Issuer,
-		s.cfg.JWT.ExpiresIn,
+		s.jwtCfg.SecretKey,
+		s.jwtCfg.Issuer,
+		s.jwtCfg.ExpiresIn,
 	)
 	if err != nil {
 		return "", fmt.Errorf("failed to generate token: %w", err)

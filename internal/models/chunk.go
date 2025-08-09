@@ -9,8 +9,8 @@ import (
 // 分片数据表
 type Chunk struct {
 	ID           uint64         `gorm:"primaryKey;autoIncrement" json:"id"`
-	FileHash     string         `gorm:"size:32;not null"`
-	ChunkIndex   int            `gorm:"not null"`
+	FileHash     string         `gorm:"size:32;not null;index:idx_chunk_hash_indx"`
+	ChunkIndex   int            `gorm:"not null;index:idx_chunk_hash_indx"`
 	UploadStatus int            `gorm:"not null;default:0"` // 0:未上传, 1:已上传
 	CreatedAt    time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	UpdatedAt    time.Time      `gorm:"autoUpdateTime" json:"updated_at"`
@@ -38,9 +38,10 @@ type UploadChunkRequest struct {
 
 // UploadCompleteRequest 是完成上传请求体
 type UploadCompleteRequest struct {
-	FileName    string `json:"file_name" binding:"required"`
-	FileHash    string `json:"file_hash" binding:"required"`
-	TotalChunks int    `json:"total_chunks" binding:"required"`
+	FileName       string  `json:"file_name" binding:"required"`
+	FileHash       string  `json:"file_hash" binding:"required"`
+	TotalChunks    int     `json:"total_chunks" binding:"required"`
+	ParentFolderID *uint64 `json:"parent_folder_id" biniding:"required"`
 }
 
 // TableName 指定 GORM 使用的表名

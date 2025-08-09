@@ -13,6 +13,16 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/services/admin"
 )
 
+type UserHandler struct {
+	userService admin.UserService
+}
+
+func NewUserHandler(userService admin.UserService) *UserHandler {
+	return &UserHandler{
+		userService: userService,
+	}
+}
+
 // GetUserInfo 处理获取已认证用户资料的请求。
 // @Summary 获取当前用户资料
 // @Description 检索已认证用户的资料详情。
@@ -25,29 +35,27 @@ import (
 // @Failure 404 {object} xerr.Response "用户未找到"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/user/me [get]
-func GetUserProfile(userService admin.UserService) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		currentUserID, ok := utils.GetUserIDFromContext(c)
-		if !ok {
-			return
-		}
-
-		user, err := userService.GetUserProfile(currentUserID)
-		if err != nil {
-			if strings.Contains(err.Error(), "用户未找到") {
-				xerr.AbortWithError(c, http.StatusNotFound, xerr.CodeNotFound, "未找到用户资料")
-			} else {
-				logger.Error("GetMyProfile: 获取用户资料失败",
-					zap.Uint64("userID", currentUserID),
-					zap.Error(err))
-				xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "检索用户资料失败")
-			}
-			return
-		}
-
-		// 成功响应，GORM 的 json:"-" 标签会确保密码不被序列化
-		xerr.Success(c, http.StatusOK, "成功获取用户资料", user)
+func (h *UserHandler) GetUserProfile(c *gin.Context) {
+	currentUserID, ok := utils.GetUserIDFromContext(c)
+	if !ok {
+		return
 	}
+
+	user, err := h.userService.GetUserProfile(currentUserID)
+	if err != nil {
+		if strings.Contains(err.Error(), "用户未找到") {
+			xerr.AbortWithError(c, http.StatusNotFound, xerr.CodeNotFound, "未找到用户资料")
+		} else {
+			logger.Error("GetMyProfile: 获取用户资料失败",
+				zap.Uint64("userID", currentUserID),
+				zap.Error(err))
+			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "检索用户资料失败")
+		}
+		return
+	}
+
+	// 成功响应，GORM 的 json:"-" 标签会确保密码不被序列化
+	xerr.Success(c, http.StatusOK, "成功获取用户资料", user)
 }
 
 // 如果你想允许通过ID获取其他用户资料（例如供管理员使用）

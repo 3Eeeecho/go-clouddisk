@@ -2,7 +2,10 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"io"
+
+	"github.com/3Eeeecho/go-clouddisk/internal/config"
 )
 
 // StorageService 定义了通用的文件存储操作接口
@@ -33,4 +36,15 @@ type GetObjectResult struct {
 	Size     int64
 	MimeType string
 	// 可以添加其他元数据，如文件名等
+}
+
+func NewStorageService(cfg *config.Config) (StorageService, error) {
+	switch cfg.Storage.Type {
+	case "minio":
+		return NewMinIOStorageService(&cfg.MinIO)
+	case "aliyun_oss":
+		return NewAliyunOSSStorageService(&cfg.AliyunOSS)
+	default:
+		return nil, errors.New("invalid storageType")
+	}
 }

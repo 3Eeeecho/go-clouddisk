@@ -7,38 +7,19 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
 	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
-	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
-	"github.com/3Eeeecho/go-clouddisk/internal/services/admin"
-	"github.com/3Eeeecho/go-clouddisk/internal/services/explorer"
-	"github.com/3Eeeecho/go-clouddisk/internal/services/share"
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"gorm.io/gorm"
 )
 
-// RouterConfig 包含初始化路由所需的所有依赖
-type RouterConfig struct {
-	db                 *gorm.DB
-	redisClient        *redis.Client
-	fileStorageService storage.StorageService
-	cfg                *config.Config
-}
-
-func NewRouterConfig(db *gorm.DB, redisClient *redis.Client, fileStorageService storage.StorageService, cfg *config.Config) *RouterConfig {
-	return &RouterConfig{
-		db:                 db,
-		redisClient:        redisClient,
-		fileStorageService: fileStorageService,
-		cfg:                cfg,
-	}
-}
-
-func InitRouter(routerCfg *RouterConfig) *gin.Engine {
+func InitRouter(authHandler *handlers.AuthHandler,
+	fileHandler *handlers.FileHandler,
+	shareHandler *handlers.ShareHandler,
+	uploadHandler *handlers.UploadHandler,
+	userHandler *handlers.UserHandler,
+	cfg *config.Config,
+) *gin.Engine {
 	// 设置 Gin 模式，开发环境为 DebugMode，生产环境为 ReleaseMode
 	gin.SetMode(gin.DebugMode) // 或者根据 routerCfg.cfg.AppCfg.Server.Env 来设置
 
@@ -60,73 +41,58 @@ func InitRouter(routerCfg *RouterConfig) *gin.Engine {
 		// 认证相关路由 (无需认证)
 		authGroup := v1.Group("/auth")
 		{
-			authGroup.POST("/register", handlers.Register(routerCfg.db, routerCfg.cfg))
-			authGroup.POST("/login", handlers.Login(routerCfg.db, routerCfg.cfg))
-			authGroup.POST("/refresh", handlers.RefreshToken(routerCfg.cfg))
+			authGroup.POST("/register", authHandler.Register)
+			authGroup.POST("/login", authHandler.Login)
+			authGroup.POST("/refresh", authHandler.RefreshToken)
 		}
 
 		// 需要认证的路由组
 		authenticated := v1.Group("/")
-		authenticated.Use(middlewares.AuthMiddleware(routerCfg.cfg))
+		authenticated.Use(middlewares.AuthMiddleware(cfg))
 
 		// 用户相关路由
 		userGroup := authenticated.Group("/users")
 		{
-			userRepo := repositories.NewUserRepository(routerCfg.db)
-			userService := admin.NewUserService(userRepo)
-
-			userGroup.GET("/me", handlers.GetUserProfile(userService))
+			userGroup.GET("/me", userHandler.GetUserProfile)
 		}
-
-		//初始化数据访问接口和服务层接口
-		cacheService := cache.NewRedisCache(routerCfg.redisClient)
-		fileRepo := repositories.NewFileRepository(routerCfg.db, cacheService)
-		userRepo := repositories.NewUserRepository(routerCfg.db)
-		domainService := explorer.NewFileDomainService(fileRepo)
-		transactionManager := explorer.NewTransactionManager(routerCfg.db)
-		fileService := explorer.NewFileService(fileRepo, userRepo, domainService, transactionManager, routerCfg.fileStorageService, cacheService, routerCfg.cfg)
 
 		// 文件相关路由
 		fileGroup := authenticated.Group("/files")
 		{
 
-			fileGroup.GET("/", handlers.ListUserFiles(fileService, routerCfg.cfg))
-			fileGroup.GET("/:file_id", handlers.GetSpecificFile(fileService, routerCfg.cfg))
-			fileGroup.POST("/upload", handlers.UploadFile(fileService, routerCfg.cfg))
-			fileGroup.POST("/folder", handlers.CreateFolder(fileService, routerCfg.cfg))
-			fileGroup.GET("/download/:file_id", handlers.DownloadFile(fileService, routerCfg.cfg))
-			fileGroup.GET("/download/folder/:id", handlers.DownloadFolder(fileService, routerCfg.cfg))
-			fileGroup.DELETE("/softdelete/:file_id", handlers.SoftDeleteFile(fileService, routerCfg.cfg))
-			fileGroup.DELETE("/permanentdelete/:file_id", handlers.PermanentDeleteFile(fileService, routerCfg.cfg))
-			fileGroup.GET("/recyclebin", handlers.ListRecycleBinFiles(fileService))
-			fileGroup.PUT("/restore/:file_id", handlers.RestoreFile(fileService))
-			fileGroup.PUT("/rename/:id", handlers.RenameFile(fileService))
-			fileGroup.PUT("/move", handlers.MoveFile(fileService))
+			fileGroup.GET("/", fileHandler.ListUserFiles)
+			fileGroup.GET("/:file_id", fileHandler.GetSpecificFile)
+			//fileGroup.POST("/upload", fileHandler.UploadFile)
+			fileGroup.POST("/folder", fileHandler.CreateFolder)
+			fileGroup.GET("/download/:file_id", fileHandler.DownloadFile)
+			fileGroup.GET("/download/folder/:id", fileHandler.DownloadFolder)
+			fileGroup.DELETE("/softdelete/:file_id", fileHandler.SoftDeleteFile)
+			fileGroup.DELETE("/permanentdelete/:file_id", fileHandler.PermanentDeleteFile)
+			fileGroup.GET("/recyclebin", fileHandler.ListRecycleBinFiles)
+			fileGroup.PUT("/restore/:file_id", fileHandler.RestoreFile)
+			fileGroup.PUT("/rename/:id", fileHandler.RenameFile)
+			fileGroup.PUT("/move", fileHandler.MoveFile)
 		}
 
 		// 分享相关路由
 		shareGroup := authenticated.Group("/shares")
 		{
-			shareRepo := repositories.NewShareRepository(routerCfg.db)
-			shareService := share.NewShareService(shareRepo, fileRepo, fileService, domainService, routerCfg.cfg)
 
-			shareGroup.GET("/:share_uuid/details", handlers.GetShareDetails(shareService, routerCfg.cfg))
-			shareGroup.POST("/:share_uuid/verify", handlers.VerifySharePassword(shareService, routerCfg.cfg))
-			shareGroup.GET("/:share_uuid/download", handlers.DownloadSharedContent(shareService, routerCfg.cfg))
+			shareGroup.GET("/:share_uuid/details", shareHandler.GetShareDetails)
+			shareGroup.POST("/:share_uuid/verify", shareHandler.VerifySharePassword)
+			shareGroup.GET("/:share_uuid/download", shareHandler.DownloadSharedContent)
 
-			shareGroup.POST("/", handlers.CreateShare(shareService, routerCfg.cfg))
-			shareGroup.GET("/my", handlers.ListUserShares(shareService, routerCfg.cfg))
-			shareGroup.DELETE("/:share_id", handlers.RevokeShare(shareService, routerCfg.cfg))
+			shareGroup.POST("/", shareHandler.CreateShare)
+			shareGroup.GET("/my", shareHandler.ListUserShares)
+			shareGroup.DELETE("/:share_id", shareHandler.RevokeShare)
 		}
 
 		// 注册断点续传路由
 		uploadRoutes := authenticated.Group("/uploads")
 		{
-			chunkRepo := repositories.NewChunkRepository(routerCfg.db, cacheService)
-			uploadService := explorer.NewUploadService(fileRepo, chunkRepo, transactionManager, routerCfg.fileStorageService, cacheService, routerCfg.cfg)
-			uploadRoutes.POST("/init", handlers.InitUploadHandler(uploadService))
-			uploadRoutes.POST("/chunk", handlers.UploadChunkHandler(uploadService))
-			uploadRoutes.POST("/complete", handlers.CompleteUploadHandler(uploadService))
+			uploadRoutes.POST("/init", uploadHandler.InitUploadHandler)
+			uploadRoutes.POST("/chunk", uploadHandler.UploadChunkHandler)
+			uploadRoutes.POST("/complete", uploadHandler.CompleteUploadHandler)
 		}
 	}
 

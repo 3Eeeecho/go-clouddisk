@@ -9,19 +9,19 @@ import (
 	"gorm.io/gorm"
 )
 
-var DB *gorm.DB // 全局数据库连接实例
-
 // InitMySQL 初始化 MySQL 数据库连接
-func InitMySQL(cfg *config.MySQLConfig) {
+func InitMySQL(cfg *config.MySQLConfig) (*gorm.DB, error) {
 	var err error
-	DB, err = gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{})
+	db, err := gorm.Open(mysql.Open(cfg.DSN), &gorm.Config{})
 	if err != nil {
 		logger.Fatal("Failed to connect to MySQL database", zap.Error(err))
+		return nil, err
 	}
 
-	sqlDB, err := DB.DB()
+	sqlDB, err := db.DB()
 	if err != nil {
 		logger.Fatal("Failed to get generic database object from GORM", zap.Error(err))
+		return nil, err
 	}
 
 	// 设置连接池参数
@@ -32,12 +32,14 @@ func InitMySQL(cfg *config.MySQLConfig) {
 	logger.Info("成功连接MySQL数据库!")
 
 	// 自动迁移数据库表结构
-	AutoMigrate()
+	AutoMigrate(db)
+
+	return db, nil
 }
 
 // AutoMigrate 自动迁移数据库表结构
-func AutoMigrate() {
-	err := DB.AutoMigrate(
+func AutoMigrate(db *gorm.DB) {
+	err := db.AutoMigrate(
 		&models.User{},
 		&models.File{},
 		&models.Share{},
@@ -50,9 +52,9 @@ func AutoMigrate() {
 }
 
 // CloseMySQLDB 关闭数据库连接
-func CloseMySQLDB() {
-	if DB != nil {
-		sqlDB, err := DB.DB()
+func CloseMySQLDB(db *gorm.DB) {
+	if db != nil {
+		sqlDB, err := db.DB()
 		if err != nil {
 			logger.Error("Error getting generic database object to close", zap.Error(err))
 			return
