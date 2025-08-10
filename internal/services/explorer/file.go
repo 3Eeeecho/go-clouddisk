@@ -76,23 +76,12 @@ func NewFileService(
 }
 
 func (s *fileService) GetFileByID(userID uint64, fileID uint64) (*models.File, error) {
-	file, err := s.fileRepo.FindByID(fileID)
+	file, err := s.domainService.CheckFile(userID, fileID)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			logger.Error("Not found file", zap.Uint64("userID", userID), zap.Any("fileID", fileID), zap.Error(err))
-			return nil, fmt.Errorf("not found file")
-		}
-		logger.Error("Failed to get file for user", zap.Uint64("userID", userID), zap.Any("fileID", fileID), zap.Error(err))
-		return nil, fmt.Errorf("failed to get file for user %d , fileID:%d, err: %w", userID, fileID, err)
+		return nil, err // 错误已在 domainService 中包裹
 	}
 
-	// 检查文件状态
-	err = s.domainService.ValidateFile(userID, file)
-	if err != nil {
-		return nil, err
-	}
-
-	logger.Info("GetFilesByUserID success", zap.Uint64("userID", userID), zap.Any("fileID", fileID))
+	logger.Info("GetFileByID success", zap.Uint64("userID", userID), zap.Any("fileID", fileID))
 	return file, nil
 }
 
@@ -100,35 +89,33 @@ func (s *fileService) GetFileByMD5Hash(userID uint64, md5Hash string) (*models.F
 	file, err := s.fileRepo.FindFileByMD5Hash(md5Hash)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			logger.Error("Not found file", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash), zap.Error(err))
-			return nil, fmt.Errorf("not found file")
+			logger.Warn("GetFileByMD5Hash: File not found", zap.String("md5Hash", md5Hash))
+			return nil, fmt.Errorf("file service: %w", xerr.ErrFileNotFound)
 		}
-		logger.Error("Failed to get file for user", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash), zap.Error(err))
-		return nil, fmt.Errorf("failed to get file for user %d , md5Hash:%s, err: %w", userID, md5Hash, err)
+		logger.Error("GetFileByMD5Hash: Failed to get file by MD5", zap.String("md5Hash", md5Hash), zap.Error(err))
+		return nil, fmt.Errorf("file service: failed to get file by md5: %w", xerr.ErrDatabaseError)
 	}
 
 	// 检查文件状态
-	err = s.domainService.ValidateFile(userID, file)
-	if err != nil {
+	if err := s.domainService.ValidateFile(userID, file); err != nil {
 		return nil, err
 	}
 
-	logger.Info("GetFilesByMD5Hash success", zap.Uint64("userID", userID), zap.Any("md5Hash", md5Hash))
+	logger.Info("GetFileByMD5Hash success", zap.Uint64("userID", userID), zap.String("md5Hash", md5Hash))
 	return file, nil
 }
 
 // GetFilesByUserID 获取用户在指定文件夹下的文件和文件夹列表
 func (s *fileService) GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error) {
 	// 检查父文件夹
-	_, err := s.domainService.CheckDirectory(userID, parentFolderID)
-	if err != nil {
+	if _, err := s.domainService.CheckDirectory(userID, parentFolderID); err != nil {
 		return nil, err
 	}
 
 	files, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
 	if err != nil {
-		logger.Error("Failed to get files for user in folder", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.Error(err))
-		return nil, fmt.Errorf("failed to get files for user %d in folder %d: %w", userID, parentFolderID, err)
+		logger.Error("GetFilesByUserID: Failed to get files", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.Error(err))
+		return nil, fmt.Errorf("file service: failed to get files: %w", xerr.ErrDatabaseError)
 	}
 	logger.Info("GetFilesByUserID success", zap.Uint64("userID", userID), zap.Any("parentFolderID", parentFolderID), zap.Int("fileCount", len(files)))
 	return files, nil
@@ -182,7 +169,7 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 			zap.Any("parentFolderID", parentFolderID),
 			zap.String("folderName", finalFolderName),
 			zap.Error(err))
-		return nil, fmt.Errorf("failed to create folder record: %w", err)
+		return nil, fmt.Errorf("file service: failed to create folder: %w", xerr.ErrDatabaseError)
 	}
 
 	logger.Info("CreateFolder: Folder created successfully",
@@ -195,8 +182,8 @@ func (s *fileService) CreateFolder(userID uint64, folderName string, parentFolde
 func (s *fileService) ListRecycleBinFiles(userID uint64) ([]models.File, error) {
 	files, err := s.fileRepo.FindDeletedFilesByUserID(userID)
 	if err != nil {
-		logger.Error("ListRecycleBinFiles: Failed to retrieve deleted files for user", zap.Uint64("userID", userID), zap.Error(err))
-		return nil, fmt.Errorf("failed to retrieve recycle bin files: %w", err)
+		logger.Error("ListRecycleBinFiles: Failed to retrieve deleted files", zap.Uint64("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("file service: failed to retrieve recycle bin files: %w", xerr.ErrDatabaseError)
 	}
 	logger.Info("ListRecycleBinFiles success", zap.Uint64("userID", userID), zap.Int("fileCount", len(files)))
 	return files, nil
@@ -304,7 +291,7 @@ func (s *fileService) MoveFile(userID uint64, fileID uint64, targetParentID *uin
 	if strings.HasPrefix(targetParentFullPath, sourceFullPathWithSelf) {
 		logger.Warn("MoveFile: Cannot move folder into its own subdirectory",
 			zap.Uint64("fileID", fileID), zap.Uint64("targetParentID", *targetParentID), zap.Uint64("userID", userID))
-		return nil, xerr.ErrCannotMoveToSelfOrSub
+		return nil, fmt.Errorf("file service: %w", xerr.ErrCannotMoveIntoSubtree)
 	}
 
 	// 检查目标文件夹是否是当前文件夹
@@ -318,7 +305,7 @@ func (s *fileService) MoveFile(userID uint64, fileID uint64, targetParentID *uin
 	if isSameDirectory {
 		logger.Info("MoveFile: No change needed, already in the same directory",
 			zap.Uint64("fileID", fileID), zap.Reflect("targetParentID", targetParentID), zap.Uint64("userID", userID))
-		return nil, errors.New("no change needed: already in the same directory")
+		return nil, fmt.Errorf("file service: %w", xerr.ErrFileAlreadyExists) // Or a more specific error
 	}
 
 	// 解决命名冲突问题
@@ -343,11 +330,11 @@ func (s *fileService) Download(ctx context.Context, userID uint64, fileID uint64
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			logger.Warn("DownloadFile: File not found in DB", zap.Uint64("fileID", fileID))
-			return nil, nil, errors.New("文件未找到")
+			logger.Warn("Download: File not found in DB", zap.Uint64("fileID", fileID))
+			return nil, nil, fmt.Errorf("file service: %w", xerr.ErrFileNotFound)
 		}
-		logger.Error("DownloadFile: Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
-		return nil, nil, fmt.Errorf("从数据库获取文件失败: %w", err)
+		logger.Error("Download: Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil, nil, fmt.Errorf("file service: failed to retrieve file: %w", xerr.ErrDatabaseError)
 	}
 
 	// 如果file是文件夹,压缩成zip并下载
@@ -378,7 +365,7 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	filesToDelete, err := s.domainService.CollectAllFiles(userID, fileID)
 	if err != nil {
 		logger.Error("SoftDeleteFile: Failed to collect files for soft deletion", zap.Uint64("fileID", fileID), zap.Error(err))
-		return fmt.Errorf("failed to collect files for soft deletion: %w", err)
+		return fmt.Errorf("file service: %w", err)
 	}
 
 	//需要反转文件切片,从尾部开始删除
@@ -399,7 +386,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 	filesToDelete, err := s.domainService.CollectAllFiles(fileID, userID)
 	if err != nil {
 		logger.Error("PermanentDeleteFile: Failed to collect files for permanent deletion", zap.Uint64("fileID", fileID), zap.Error(err))
-		return fmt.Errorf("failed to collect files for permanent deletion: %w", err)
+		return fmt.Errorf("file service: %w", err)
 	}
 
 	//需要反转文件切片,从尾部开始删除

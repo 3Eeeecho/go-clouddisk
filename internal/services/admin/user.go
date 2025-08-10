@@ -1,13 +1,16 @@
 package admin
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 type UserService interface {
@@ -25,16 +28,16 @@ func NewUserService(userRepo repositories.UserRepository) UserService {
 }
 
 func (s *userService) GetUserProfile(userID uint64) (*models.User, error) {
-	user, err := s.userRepo.GetUserByID(userID)
+	user, err := s.userRepo.GetUserByID(context.Background(), userID)
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Warn("GetUserProfile: User not found", zap.Uint64("userID", userID))
+			return nil, fmt.Errorf("user service: %w", xerr.ErrUserNotFound)
+		}
 		logger.Error("GetUserProfile: Error retrieving user from DB",
 			zap.Uint64("userID", userID),
 			zap.Error(err))
-		return nil, fmt.Errorf("failed to retrieve user profile: %w", err)
-	}
-	if user == nil { // userRepo.FindByID returns nil, nil if not found
-		logger.Warn("GetUserProfile: User not found", zap.Uint64("userID", userID))
-		return nil, errors.New("user not found")
+		return nil, fmt.Errorf("user service: failed to retrieve user profile: %w", xerr.ErrDatabaseError)
 	}
 
 	// 可以在这里添加额外的业务逻辑，例如：

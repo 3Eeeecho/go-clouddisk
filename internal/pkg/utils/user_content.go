@@ -12,12 +12,12 @@ import (
 func GetUserIDFromContext(c *gin.Context) (uint64, bool) {
 	userID, exists := c.Get("userID")
 	if !exists {
-		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "User ID not found in context")
+		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "User ID not found in context")
 		return 0, false
 	}
 	currentUserID, ok := userID.(uint64)
 	if !ok {
-		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Invalid user ID type in context")
+		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Invalid user ID type in context")
 		return 0, false
 	}
 	return currentUserID, true

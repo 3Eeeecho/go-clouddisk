@@ -3,7 +3,6 @@ package explorer
 import (
 	"archive/zip"
 	"context"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -23,12 +22,14 @@ func (s *fileService) performSoftDelete(userID uint64, filesToDelete []models.Fi
 	for _, fileToDelete := range filesToDelete {
 		// 双重检查权限
 		if fileToDelete.UserID != userID {
-			return errors.New("access denied: file does not belong to user")
+			logger.Error("performSoftDelete: Access denied", zap.Uint64("fileID", fileToDelete.ID), zap.Uint64("userID", userID))
+			return fmt.Errorf("helper: %w", xerr.ErrPermissionDenied)
 		}
 
 		// 执行软删除
 		if err := s.fileRepo.SoftDelete(fileToDelete.ID); err != nil {
-			return fmt.Errorf("failed to soft delete file %d: %w", fileToDelete.ID, err)
+			logger.Error("performSoftDelete: Failed to soft delete", zap.Uint64("fileID", fileToDelete.ID), zap.Error(err))
+			return fmt.Errorf("helper: failed to soft delete file %d: %w", fileToDelete.ID, xerr.ErrDatabaseError)
 		}
 
 		logger.Info("File soft deleted",
@@ -47,19 +48,20 @@ func (s *fileService) performPermanentDelete(filesToDelete []models.File, userID
 
 		// 确保文件属于当前用户 (双重检查)
 		if fileToDelete.UserID != userID {
-			return errors.New("internal error: file ownership mismatch during batch permanent deletion")
+			logger.Error("performPermanentDelete: Access denied", zap.Uint64("fileID", fileToDelete.ID), zap.Uint64("userID", userID))
+			return fmt.Errorf("helper: %w", xerr.ErrPermissionDenied)
 		}
 
 		// 删除物理文件（如果是文件且有物理存储）
 		if err := s.deletePhysicalFile(&fileToDelete); err != nil {
-			return err
+			return err // 错误已在下层包裹
 		}
 
 		// 删除数据库记录
 		if err := s.fileRepo.PermanentDelete(fileToDelete.ID); err != nil {
-			logger.Error("PermanentDeleteFile: Failed to delete file record from DB",
+			logger.Error("performPermanentDelete: Failed to delete file record from DB",
 				zap.Uint64("fileID", fileToDelete.ID), zap.Error(err))
-			return fmt.Errorf("failed to delete file record: %w", err)
+			return fmt.Errorf("helper: failed to delete file record: %w", xerr.ErrDatabaseError)
 		}
 
 		logger.Info("File permanently deleted",
@@ -77,7 +79,8 @@ func (s *fileService) deletePhysicalFile(file *models.File) error {
 		// 检查是否有其他文件引用这个物理文件
 		referencesCount, err := s.fileRepo.CountFilesInStorage(*file.OssKey, *file.MD5Hash, file.ID)
 		if err != nil {
-			return fmt.Errorf("failed to check file references before deleting physical file: %w", err)
+			logger.Error("deletePhysicalFile: Failed to check file references", zap.String("ossKey", *file.OssKey), zap.Error(err))
+			return fmt.Errorf("helper: failed to check file references: %w", xerr.ErrDatabaseError)
 		}
 
 		if referencesCount == 0 {
@@ -92,7 +95,8 @@ func (s *fileService) deletePhysicalFile(file *models.File) error {
 			case "minio":
 				return s.deleteMinioFile(file)
 			default:
-				return errors.New("unsupported storage type configured for permanent deletion")
+				logger.Error("deletePhysicalFile: Unsupported storage type", zap.String("type", s.cfg.Storage.Type))
+				return fmt.Errorf("helper: %w", xerr.ErrStorageError)
 			}
 		} else {
 			// 存在其他用户的文件引用,就不删除物理文件
@@ -113,7 +117,7 @@ func (s *fileService) deleteLocalFile(ossKey string) error {
 	if err != nil {
 		logger.Error("Failed to delete physical file",
 			zap.String("path", localFilePath), zap.Error(err))
-		return fmt.Errorf("failed to delete physical file: %w", err)
+		return fmt.Errorf("helper: failed to delete physical file: %w", xerr.ErrStorageError)
 	}
 	logger.Info("Physical file deleted", zap.String("path", localFilePath))
 	return nil
@@ -138,7 +142,7 @@ func (s *fileService) deleteMinioFile(file *models.File) error {
 			zap.String("ossKey", *file.OssKey),
 			zap.Uint64("fileID", file.ID),
 			zap.Error(err))
-		return fmt.Errorf("failed to delete object from cloud storage: %w", err)
+		return fmt.Errorf("helper: failed to delete object from cloud storage: %w", xerr.ErrStorageError)
 	}
 
 	logger.Info("Object deleted from MinIO",
@@ -153,13 +157,13 @@ func (s *fileService) downloadFile(ctx context.Context, file *models.File) (*mod
 	// 检查 OssKey 是否存在
 	if file.OssKey == nil || *file.OssKey == "" {
 		logger.Error("DownloadFile: File record has no OssKey, cannot retrieve physical file", zap.Uint64("fileID", file.ID))
-		return nil, nil, errors.New("文件数据不可用（缺少存储键）")
+		return nil, nil, fmt.Errorf("helper: %w", xerr.ErrStorageError)
 	}
 
 	// getFileContentReader 成为一个通用的辅助函数，用于获取文件内容读取器
 	fileContentReader, err := s.GetFileContentReader(ctx, file)
 	if err != nil {
-		return nil, nil, fmt.Errorf("获取文件内容失败: %w", err)
+		return nil, nil, err // 错误已在下层包裹
 	}
 
 	return file, fileContentReader, nil // 返回文件元数据和读取器
@@ -170,7 +174,7 @@ func (s *fileService) downloadFolder(ctx context.Context, userID uint64, rootFol
 	filesToCompress, err := s.domainService.CollectAllNormalFiles(rootFolder.ID, userID)
 	if err != nil {
 		logger.Error("DownloadFolder: Failed to collect children for folder", zap.Uint64("folderID", rootFolder.ID), zap.Error(err))
-		return nil, nil, fmt.Errorf("failed to collect folder children: %w", err)
+		return nil, nil, fmt.Errorf("helper: failed to collect folder children: %w", err)
 	}
 
 	// 使用 pipe 来实现流式 ZIP 压缩
@@ -265,7 +269,7 @@ func (s *fileService) GetFileContentReader(ctx context.Context, file *models.Fil
 	storageType := s.cfg.Storage.Type
 	if file.OssKey == nil || *file.OssKey == "" {
 		logger.Error("GetFileContentReader: File record has no OssKey", zap.Uint64("fileID", file.ID))
-		return nil, errors.New("文件记录缺少存储键(OssKey)")
+		return nil, fmt.Errorf("helper: %w", xerr.ErrStorageError)
 	}
 
 	var bucketName string
@@ -284,7 +288,7 @@ func (s *fileService) GetFileContentReader(ctx context.Context, file *models.Fil
 		default:
 			logger.Error("GetFileContentReader: Unsupported default storage type for getting bucket name",
 				zap.String("storageType", storageType))
-			return nil, errors.New("不支持的存储类型配置，无法获取桶名")
+			return nil, fmt.Errorf("helper: %w", xerr.ErrStorageError)
 		}
 		logger.Warn("GetFileContentReader: OssBucket is missing in file record, using default bucket name",
 			zap.Uint64("fileID", file.ID), zap.String("defaultBucket", bucketName))
@@ -292,7 +296,7 @@ func (s *fileService) GetFileContentReader(ctx context.Context, file *models.Fil
 
 	// local存储不处理
 	if storageType == "local" {
-		return nil, errors.New("本地存储暂不考虑")
+		return nil, fmt.Errorf("helper: %w", xerr.ErrStorageError)
 	}
 
 	// 将所有云存储类型统一处理
@@ -309,7 +313,7 @@ func (s *fileService) GetFileContentReader(ctx context.Context, file *models.Fil
 			zap.String("bucket", bucketName),
 			zap.String("ossKey", *file.OssKey),
 			zap.Error(err))
-		return nil, fmt.Errorf("从云存储获取对象失败 %s/%s: %w", bucketName, *file.OssKey, err)
+		return nil, fmt.Errorf("helper: failed to get object from cloud storage %s/%s: %w", bucketName, *file.OssKey, xerr.ErrStorageError)
 	}
 
 	return objResult.Reader, nil
@@ -337,7 +341,7 @@ func (s *fileService) moveFile(userID uint64, fileToMove *models.File, targetPar
 			zap.Uint64("fileID", fileToMove.ID),
 			zap.String("newName", fileToMove.FileName),
 			zap.Error(err))
-		return fmt.Errorf("failed to update file name in transaction: %w", err)
+		return fmt.Errorf("helper: failed to update file name in transaction: %w", xerr.ErrDatabaseError)
 	}
 	logger.Info("MoveFile: File name updated successfully in DB transaction",
 		zap.Uint64("fileID", fileToMove.ID),
@@ -355,7 +359,7 @@ func (s *fileService) moveFile(userID uint64, fileToMove *models.File, targetPar
 		if err := s.fileRepo.UpdateFilesPathInBatch(userID, oldChildPathPrefix, newChildPathPrefix); err != nil {
 			logger.Error("MoveFile: Failed to update children paths in DB transaction",
 				zap.Uint64("parentFolderID", fileToMove.ID), zap.Error(err))
-			return fmt.Errorf("%w: failed to update children paths: %w", xerr.ErrDatabaseTransaction, err)
+			return fmt.Errorf("helper: failed to update children paths: %w", xerr.ErrDatabaseError)
 		}
 	}
 
@@ -369,7 +373,7 @@ func (s *fileService) renameFile(fileToRename *models.File) error {
 			zap.Uint64("fileID", fileToRename.ID),
 			zap.String("newName", fileToRename.FileName),
 			zap.Error(err))
-		return fmt.Errorf("failed to update file name in transaction: %w", err)
+		return fmt.Errorf("helper: failed to update file name in transaction: %w", xerr.ErrDatabaseError)
 	}
 	return nil
 }
@@ -379,7 +383,7 @@ func (s *fileService) restoreFile(userID uint64, fileID uint64, finalFileName st
 	filesToRestore, err := s.domainService.CollectAllFiles(userID, fileID)
 	if err != nil {
 		logger.Error("RestoreFile: Failed to collect files for restoration", zap.Uint64("fileID", fileID), zap.Error(err))
-		return fmt.Errorf("failed to collect files for restoration: %w", err)
+		return fmt.Errorf("helper: %w", err)
 	}
 
 	//批量恢复数据库记录
@@ -397,7 +401,7 @@ func (s *fileService) restoreFile(userID uint64, fileID uint64, finalFileName st
 			logger.Error("RestoreFile: Failed to restore file record in DB transaction",
 				zap.Uint64("fileToUpdateID", fileToUpdate.ID),
 				zap.Error(err))
-			return fmt.Errorf("failed to restore file in transaction: %w", err)
+			return fmt.Errorf("helper: failed to restore file in transaction: %w", xerr.ErrDatabaseError)
 		}
 		logger.Info("RestoreFile: File ID restored in DB transaction.", zap.Uint64("fileID", fileToUpdate.ID))
 	}

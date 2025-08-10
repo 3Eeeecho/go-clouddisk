@@ -17,14 +17,14 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 		// 1. 从请求头获取 Token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.CodeUnauthorized, "Authorization header is required")
+			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Authorization header is required")
 			return
 		}
 
 		// Token 格式通常是 "Bearer <token>"
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.CodeUnauthorized, "Invalid Authorization header format")
+			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid Authorization header format")
 			return
 		}
 		tokenString := parts[1]
@@ -39,12 +39,12 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 		})
 
 		if err != nil {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.CodeUnauthorized, "Invalid or malformed token: "+err.Error()) // 统一返回错误
+			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid or malformed token: "+err.Error()) // 统一返回错误
 			return
 		}
 
 		if !token.Valid {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.CodeUnauthorized, "Invalid token")
+			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid token")
 			return
 		}
 

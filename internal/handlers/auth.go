@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
@@ -49,23 +50,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBind(&req); err != nil {
 		// 参数绑定错误，使用通用错误响应
-		xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, err.Error())
 		return
 	}
 
 	_, err := h.authService.RegisterUser(req.Username, req.Password, req.Email)
 	if err != nil {
 		// 根据错误类型返回不同的状态码和业务码
-		if err.Error() == "username already exists" {
-			xerr.Error(c, http.StatusConflict, xerr.CodeUserAlreadyExists, err.Error())
+		if errors.Is(err, xerr.ErrUserAlreadyExists) {
+			xerr.Error(c, http.StatusConflict, xerr.UserAlreadyExistsCode, err.Error())
 			return
 		}
-		if err.Error() == "email already exists" {
-			xerr.Error(c, http.StatusConflict, xerr.CodeEmailAlreadyExists, err.Error())
+		if errors.Is(err, xerr.ErrEmailAlreadyExists) {
+			xerr.Error(c, http.StatusConflict, xerr.EmailAlreadyExistsCode, err.Error())
 			return
 		}
 		// 其他内部服务器错误
-		xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Failed to register user")
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "注册失败")
 		return
 	}
 
@@ -85,21 +86,22 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.CodeInvalidParams, err.Error())
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, err.Error())
 		return
 	}
 
 	token, err := h.authService.LoginUser(req.Identifier, req.Password)
 	if err != nil {
-		if err.Error() == "user not found" {
-			xerr.Error(c, http.StatusUnauthorized, xerr.CodeUserNotFound, "User not found")
+		if errors.Is(err, xerr.ErrUserNotFound) {
+			xerr.Error(c, http.StatusUnauthorized, xerr.UserNotFoundCode, "用户不存在")
+
 			return
 		}
-		if err.Error() == "invalid credentials" {
-			xerr.Error(c, http.StatusUnauthorized, xerr.CodeInvalidCredentials, "Invalid username or password")
+		if errors.Is(err, xerr.ErrInvalidCredentials) {
+			xerr.Error(c, http.StatusUnauthorized, xerr.InvalidCredentialsCode, "账户名或密码错误")
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Failed to login")
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "登陆失败")
 		return
 	}
 

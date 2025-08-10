@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,12 +13,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// uploadHandler 结构体持有其服务依赖
+// UploadHandler 结构体持有其服务依赖
 type UploadHandler struct {
 	uploadService explorer.UploadService
 }
 
-// NewUploadHandler 创建一个新的 uploadHandler 实例
+// NewUploadHandler 创建一个新的 UploadHandler 实例
 func NewUploadHandler(uploadService explorer.UploadService) *UploadHandler {
 	return &UploadHandler{
 		uploadService: uploadService,
@@ -34,6 +35,7 @@ func NewUploadHandler(uploadService explorer.UploadService) *UploadHandler {
 // @Param request body models.UploadInitRequest true "上传初始化参数"
 // @Success 200 {object} xerr.Response "上传初始化成功"
 // @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 409 {object} xerr.Response "文件已存在"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/upload/init [post]
 func (h *UploadHandler) InitUploadHandler(c *gin.Context) {
@@ -43,13 +45,21 @@ func (h *UploadHandler) InitUploadHandler(c *gin.Context) {
 	}
 	var req models.UploadInitRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid request body")
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body")
 		return
 	}
 
 	resp, err := h.uploadService.UploadInit(c, currentUserID, &req)
 	if err != nil {
-		xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Failed to initialize upload")
+		if errors.Is(err, xerr.ErrDirectoryNotFound) {
+			xerr.Error(c, http.StatusBadRequest, xerr.DirectoryNotFoundCode, err.Error())
+			return
+		}
+		if errors.Is(err, xerr.ErrFileAlreadyExists) {
+			xerr.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
+			return
+		}
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to initialize upload")
 		return
 	}
 	xerr.Success(c, http.StatusOK, "Upload initialized successfully", resp)
@@ -67,6 +77,7 @@ func (h *UploadHandler) InitUploadHandler(c *gin.Context) {
 // @Param chunk_index formData int true "分片索引"
 // @Success 200 {object} xerr.Response "分片上传成功"
 // @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 404 {object} xerr.Response "上传会话未找到"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/upload/chunk [post]
 func (h *UploadHandler) UploadChunkHandler(c *gin.Context) {
@@ -77,42 +88,42 @@ func (h *UploadHandler) UploadChunkHandler(c *gin.Context) {
 
 	file, err := c.FormFile("chunk")
 	if err != nil {
-		xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Chunk file not found")
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Chunk file not found")
 		return
 	}
 
 	fileContent, err := file.Open()
 	if err != nil {
-		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.CodeInternalServerError, "Failed to open chunk file")
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to open chunk file")
 		return
 	}
 	defer fileContent.Close()
 
-	// 手动从表单中获取其他字段
 	fileHash := c.PostForm("file_hash")
 	chunkIndexStr := c.PostForm("chunk_index")
 
-	// 验证字段是否缺失
 	if fileHash == "" || chunkIndexStr == "" {
-		xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid form data: missing required fields")
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid form data: missing required fields")
 		return
 	}
 
-	// 将字符串转换为整数
 	chunkIndex, err := strconv.Atoi(chunkIndexStr)
 	if err != nil {
-		xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid chunk_index format")
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid chunk_index format")
 		return
 	}
 
-	// 构造请求体并调用服务
 	req := models.UploadChunkRequest{
 		FileHash:   fileHash,
 		ChunkIndex: chunkIndex,
 	}
 
 	if err := h.uploadService.UploadChunk(c, currentUserID, &req, fileContent); err != nil {
-		xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to upload chunk: %v", err))
+		if errors.Is(err, xerr.ErrUploadSessionNotFound) {
+			xerr.Error(c, http.StatusNotFound, xerr.UploadSessionNotFoundCode, err.Error())
+			return
+		}
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, fmt.Sprintf("Failed to upload chunk: %v", err))
 		return
 	}
 
@@ -129,6 +140,7 @@ func (h *UploadHandler) UploadChunkHandler(c *gin.Context) {
 // @Param request body models.UploadCompleteRequest true "上传完成参数"
 // @Success 200 {object} xerr.Response "文件上传完成"
 // @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 404 {object} xerr.Response "上传会话未找到"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
 // @Router /api/v1/upload/complete [post]
 func (h *UploadHandler) CompleteUploadHandler(c *gin.Context) {
@@ -138,13 +150,25 @@ func (h *UploadHandler) CompleteUploadHandler(c *gin.Context) {
 	}
 	var req models.UploadCompleteRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.AbortWithError(c, http.StatusBadRequest, xerr.CodeInvalidParams, "Invalid request body")
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body")
 		return
 	}
 
 	newFile, err := h.uploadService.UploadComplete(c, currentUserID, &req)
 	if err != nil {
-		xerr.Error(c, http.StatusInternalServerError, xerr.CodeInternalServerError, fmt.Sprintf("Failed to complete upload: %v", err))
+		if errors.Is(err, xerr.ErrUploadSessionNotFound) {
+			xerr.Error(c, http.StatusNotFound, xerr.UploadSessionNotFoundCode, err.Error())
+			return
+		}
+		if errors.Is(err, xerr.ErrChunkMissing) {
+			xerr.Error(c, http.StatusBadRequest, xerr.ChunkMissingCode, err.Error())
+			return
+		}
+		if errors.Is(err, xerr.ErrHashMismatch) {
+			xerr.Error(c, http.StatusBadRequest, xerr.HashMismatchCode, err.Error())
+			return
+		}
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, fmt.Sprintf("Failed to complete upload: %v", err))
 		return
 	}
 

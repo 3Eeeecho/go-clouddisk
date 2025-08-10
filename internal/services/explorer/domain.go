@@ -7,6 +7,7 @@ import (
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"go.uber.org/zap"
 	"gorm.io/gorm"
 )
@@ -53,7 +54,7 @@ func NewFileDomainService(fileRepo FileRepository) FileDomainService {
 // ValidateFile 只检查文件状态和权限,不返回文件
 func (s *fileDomainService) ValidateFile(userID uint64, file *models.File) error {
 	if file == nil {
-		return errors.New("file is nil")
+		return fmt.Errorf("domain service: %w", xerr.ErrFileNotFound)
 	}
 
 	if file.UserID != userID {
@@ -61,14 +62,14 @@ func (s *fileDomainService) ValidateFile(userID uint64, file *models.File) error
 			zap.Uint64("fileID", file.ID),
 			zap.Uint64("userID", userID),
 			zap.Uint64("ownerID", file.UserID))
-		return errors.New("access denied: file does not belong to user")
+		return fmt.Errorf("domain service: %w", xerr.ErrPermissionDenied)
 	}
 
 	if file.Status != 1 {
 		logger.Warn("File is not in normal status",
 			zap.Uint64("fileID", file.ID),
 			zap.Uint8("status", file.Status))
-		return errors.New("file is not available")
+		return fmt.Errorf("domain service: %w", xerr.ErrFileStatusInvalid)
 	}
 
 	return nil
@@ -81,7 +82,7 @@ func (s *fileDomainService) ValidateFolder(userID uint64, folder *models.File) e
 	}
 
 	if folder.IsFolder != 1 {
-		return errors.New("not a directory")
+		return fmt.Errorf("domain service: %w", xerr.ErrTargetNotFolder)
 	}
 
 	return nil
@@ -89,34 +90,18 @@ func (s *fileDomainService) ValidateFolder(userID uint64, folder *models.File) e
 
 // CheckFile 检查文件状态和权限,并返回正常状态的文件
 func (s *fileDomainService) CheckFile(userID uint64, fileID uint64) (*models.File, error) {
-	// 验证根文件夹是否存在且属于用户
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			logger.Warn("DownloadFolder: Folder not found in DB", zap.Uint64("folderID", file.ID))
-			return nil, errors.New("folder not found")
+			logger.Warn("CheckFile: File not found in DB", zap.Uint64("fileID", fileID))
+			return nil, fmt.Errorf("domain service: %w", xerr.ErrFileNotFound)
 		}
-		logger.Error("DownloadFolder: Error retrieving folder from DB", zap.Uint64("folderID", file.ID), zap.Error(err))
-		return nil, fmt.Errorf("failed to retrieve folder from DB: %w", err)
+		logger.Error("CheckFile: Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil, fmt.Errorf("domain service: failed to retrieve file: %w", xerr.ErrDatabaseError)
 	}
 
-	if file == nil {
-		return nil, errors.New("file is nil")
-	}
-
-	if file.UserID != userID {
-		logger.Warn("File access denied",
-			zap.Uint64("fileID", file.ID),
-			zap.Uint64("userID", userID),
-			zap.Uint64("ownerID", file.UserID))
-		return nil, errors.New("access denied: file does not belong to user")
-	}
-
-	if file.Status != 1 {
-		logger.Warn("File is not in normal status",
-			zap.Uint64("fileID", file.ID),
-			zap.Uint8("status", file.Status))
-		return nil, errors.New("file is not available")
+	if err := s.ValidateFile(userID, file); err != nil {
+		return nil, err
 	}
 
 	return file, nil
@@ -135,7 +120,7 @@ func (s *fileDomainService) CheckDirectory(userID uint64, folderID *uint64) (*mo
 	}
 
 	if folder.IsFolder != 1 {
-		return nil, errors.New("not a directory")
+		return nil, fmt.Errorf("domain service: %w", xerr.ErrTargetNotFolder)
 	}
 
 	return folder, nil
@@ -143,27 +128,26 @@ func (s *fileDomainService) CheckDirectory(userID uint64, folderID *uint64) (*mo
 
 // CheckDeletedFile 检查并返回已经被软删除的文件
 func (s *fileDomainService) CheckDeletedFile(userID uint64, fileID uint64) (*models.File, error) {
-	// 获取要恢复的文件/文件夹记录
 	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			logger.Warn("RestoreFile: File ID not found for user", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
-			return nil, errors.New("file or folder not found")
+			logger.Warn("CheckDeletedFile: File not found", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID))
+			return nil, fmt.Errorf("domain service: %w", xerr.ErrFileNotFound)
 		}
-		logger.Error("RestoreFile: Error retrieving file ID", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
-		return nil, fmt.Errorf("failed to retrieve file: %w", err)
+		logger.Error("CheckDeletedFile: Error retrieving file", zap.Uint64("fileID", fileID), zap.Uint64("userID", userID), zap.Error(err))
+		return nil, fmt.Errorf("domain service: failed to retrieve file: %w", xerr.ErrDatabaseError)
 	}
 
 	// 权限检查
 	if file.UserID != userID {
-		logger.Warn("RestoreFile: Access denied for file", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
-		return nil, errors.New("access denied: file or folder does not belong to user")
+		logger.Warn("CheckDeletedFile: Access denied", zap.Uint64("fileID", file.ID), zap.Uint64("userID", userID), zap.Uint64("ownerID", file.UserID))
+		return nil, fmt.Errorf("domain service: %w", xerr.ErrPermissionDenied)
 	}
 
 	// 检查文件是否在回收站中
-	// 只有 deleted_at 不为空，且 status 为 0，才认为是回收站中的文件
 	if !file.DeletedAt.Valid || file.Status == 1 {
-		return nil, errors.New("file or folder is not in the recycle bin")
+		logger.Warn("CheckDeletedFile: File is not in recycle bin", zap.Uint64("fileID", file.ID))
+		return nil, fmt.Errorf("domain service: %w", xerr.ErrFileNotInRecycleBin)
 	}
 
 	return file, nil
@@ -172,17 +156,17 @@ func (s *fileDomainService) CheckDeletedFile(userID uint64, fileID uint64) (*mod
 // ResolveFileNameConflict 解决文件名冲突
 func (s *fileDomainService) ResolveFileNameConflict(userID uint64, parentFolderID *uint64, fileName string, currentFileID uint64, isFolder uint8) (string, error) {
 	if fileName == "" {
-		return "", errors.New("file name cannot be empty")
+		return "", fmt.Errorf("domain service: %w", xerr.ErrFileNameInvalid)
 	}
 
 	// 获取同级文件列表
 	siblingFiles, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, parentFolderID)
 	if err != nil {
-		logger.Error("Failed to get sibling files for conflict resolution",
+		logger.Error("ResolveFileNameConflict: Failed to get sibling files",
 			zap.Uint64("userID", userID),
 			zap.Any("parentFolderID", parentFolderID),
 			zap.Error(err))
-		return "", fmt.Errorf("failed to get sibling files: %w", err)
+		return "", fmt.Errorf("domain service: failed to get sibling files: %w", xerr.ErrDatabaseError)
 	}
 
 	// 检查是否存在同名文件
@@ -234,7 +218,9 @@ func (s *fileDomainService) ResolveFileNameConflict(userID uint64, parentFolderI
 
 		counter++
 		if counter > 1000 { // 防止无限循环
-			return "", errors.New("unable to resolve file name conflict")
+			logger.Error("ResolveFileNameConflict: Unable to resolve file name conflict after too many attempts",
+				zap.String("originalName", fileName))
+			return "", fmt.Errorf("domain service: %w", xerr.ErrInternalServer)
 		}
 	}
 }
@@ -275,8 +261,12 @@ func (s *fileDomainService) CollectAllFiles(userID uint64, fileID uint64) ([]mod
 	// 验证权限并获取根文件
 	rootFile, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
-		logger.Error("failed to get file", zap.Uint64("fileID", fileID))
-		return nil, err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Warn("CollectAllFiles: Root file not found", zap.Uint64("fileID", fileID))
+			return nil, fmt.Errorf("domain service: %w", xerr.ErrFileNotFound)
+		}
+		logger.Error("CollectAllFiles: Failed to get root file", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil, fmt.Errorf("domain service: failed to get root file: %w", xerr.ErrDatabaseError)
 	}
 
 	var allFiles []models.File
@@ -286,7 +276,7 @@ func (s *fileDomainService) CollectAllFiles(userID uint64, fileID uint64) ([]mod
 	if rootFile.IsFolder == 1 {
 		children, err := s.collectChildrenRecursively(userID, fileID)
 		if err != nil {
-			return nil, err
+			return nil, err // 错误已在下层包裹
 		}
 		allFiles = append(allFiles, children...)
 	}
@@ -309,7 +299,10 @@ func (s *fileDomainService) collectChildrenRecursively(userID uint64, folderID u
 		// 获取当前文件夹的子项
 		children, err := s.fileRepo.FindByUserIDAndParentFolderID(userID, &currentID)
 		if err != nil {
-			return nil, fmt.Errorf("failed to get children of folder %d: %w", currentID, err)
+			logger.Error("collectChildrenRecursively: Failed to get children",
+				zap.Uint64("folderID", currentID),
+				zap.Error(err))
+			return nil, fmt.Errorf("domain service: failed to get children of folder %d: %w", currentID, xerr.ErrDatabaseError)
 		}
 
 		for _, child := range children {

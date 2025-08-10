@@ -3,7 +3,6 @@ package explorer
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/mq"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -80,7 +80,8 @@ func (s *uploadService) UploadInit(ctx context.Context, userID uint64, req *mode
 	// 2. 查找已上传的分片
 	chunks, err := s.chunkRepo.GetUploadedChunks(req.FileHash)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get uploaded chunks: %w", err)
+		logger.Error("UploadInit: Failed to get uploaded chunks", zap.String("fileHash", req.FileHash), zap.Error(err))
+		return nil, fmt.Errorf("upload service: failed to get uploaded chunks: %w", xerr.ErrDatabaseError)
 	}
 
 	uploadedIndexes := make([]int, 0, len(chunks))
@@ -100,7 +101,7 @@ func (s *uploadService) UploadChunk(ctx context.Context, userID uint64, req *mod
 	tempDir := filepath.Join(os.TempDir(), "clouddisk_chunks", req.FileHash)
 	if err := os.MkdirAll(tempDir, os.ModePerm); err != nil {
 		logger.Error("UploadChunk: Failed to create temp directory", zap.Error(err), zap.String("dir", tempDir))
-		return fmt.Errorf("failed to create temp directory: %w", err)
+		return fmt.Errorf("upload service: failed to create temp directory: %w", err)
 	}
 
 	tempFilePath := filepath.Join(tempDir, fmt.Sprintf("%d.chunk", req.ChunkIndex))
@@ -109,13 +110,13 @@ func (s *uploadService) UploadChunk(ctx context.Context, userID uint64, req *mod
 	outFile, err := os.Create(tempFilePath)
 	if err != nil {
 		logger.Error("UploadChunk: Failed to create chunk file", zap.Error(err), zap.String("path", tempFilePath))
-		return fmt.Errorf("failed to create chunk file: %w", err)
+		return fmt.Errorf("upload service: failed to create chunk file: %w", err)
 	}
 	defer outFile.Close()
 
 	if _, err := io.Copy(outFile, chunkData); err != nil {
 		logger.Error("UploadChunk: Failed to write chunk data", zap.Error(err), zap.String("path", tempFilePath))
-		return fmt.Errorf("failed to write chunk data: %w", err)
+		return fmt.Errorf("upload service: failed to write chunk data: %w", err)
 	}
 
 	// 2. 更新数据库分片状态
@@ -135,7 +136,7 @@ func (s *uploadService) UploadChunk(ctx context.Context, userID uint64, req *mod
 	if err != nil {
 		// 如果数据库操作失败，可以考虑删除已写入的临时文件
 		os.Remove(tempFilePath)
-		return fmt.Errorf("failed to save chunk record: %w", err)
+		return fmt.Errorf("upload service: failed to save chunk record: %w", xerr.ErrDatabaseError)
 	}
 
 	logger.Info("UploadChunk: Chunk uploaded and record saved",
@@ -153,7 +154,7 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 			zap.String("fileHash", req.FileHash),
 			zap.Int64("uploaded", uploadedCount),
 			zap.Int("total", req.TotalChunks))
-		return nil, errors.New("not all chunks have been uploaded")
+		return nil, fmt.Errorf("upload service: %w", xerr.ErrChunkMissing)
 	}
 
 	var newFile *models.File
@@ -171,7 +172,8 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 			Status:         1,
 		}
 		if createErr := fileRepo.Create(newFile); createErr != nil {
-			return createErr
+			logger.Error("UploadComplete: Failed to create file record", zap.Error(createErr))
+			return fmt.Errorf("upload service: failed to create file record: %w", xerr.ErrDatabaseError)
 		}
 
 		task := &MergeTask{
@@ -184,11 +186,13 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 		}
 		taskBytes, err := json.Marshal(task)
 		if err != nil {
-			return fmt.Errorf("failed to marshal merge task: %w", err)
+			logger.Error("UploadComplete: Failed to marshal merge task", zap.Error(err))
+			return fmt.Errorf("upload service: failed to marshal merge task: %w", err)
 		}
 
 		if err := s.deps.MQClient.Publish(taskBytes); err != nil {
-			return fmt.Errorf("failed to publish merge task to rabbitmq: %w", err)
+			logger.Error("UploadComplete: Failed to publish merge task", zap.Error(err))
+			return fmt.Errorf("upload service: failed to publish merge task: %w", xerr.ErrMQError)
 		}
 
 		return nil

@@ -31,19 +31,21 @@ func NewChunkRepository(db *gorm.DB, cache *cache.RedisCache) ChunkRepository {
 	}
 }
 
-// FindByID 根据 ID 查找分片 (如果需要)
+// FindByID 根据 ID 查找分片
 func (r *chunkRepository) FindByID(id uint64) (*models.Chunk, error) {
 	var chunk models.Chunk
 	err := r.db.First(&chunk, id).Error
 	if err != nil {
-		return nil, err
+		logger.Error("FindChunkByID: Failed to find chunk", zap.Uint64("chunk_id", id))
+		return nil, fmt.Errorf("chunk repository: failed to find chunk: %w", err)
 	}
 	return &chunk, nil
 }
 
 // SaveChunk 保存或更新分片记录
 func (r *chunkRepository) SaveChunk(chunk *models.Chunk) error {
-	// GORM 的 FirstOrCretae 可以用来实现断点续传的幂等性
+	// 如果是新建记录，GORM 的 Attrs 会自动设置 UploadStatus
+	// 如果是已有记录，则不更新，因为我们不需要更新
 	result := r.db.Where("file_hash = ? AND chunk_index = ?", chunk.FileHash, chunk.ChunkIndex).
 		Attrs(models.Chunk{UploadStatus: 1}).
 		FirstOrCreate(&chunk)
@@ -56,8 +58,6 @@ func (r *chunkRepository) SaveChunk(chunk *models.Chunk) error {
 		return fmt.Errorf("failed to save chunk record: %w", result.Error)
 	}
 
-	// 如果是新建记录，GORM 的 Attrs 会自动设置 UploadStatus
-	// 如果是已有记录，则不更新，因为我们不需要更新
 	return nil
 }
 
