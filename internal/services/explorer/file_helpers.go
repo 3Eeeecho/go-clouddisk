@@ -135,7 +135,8 @@ func (s *fileService) deleteMinioFile(file *models.File) error {
 		zap.String("ossKey", *file.OssKey),
 		zap.Uint64("fileID", file.ID))
 
-	err := s.StorageService.RemoveObject(context.Background(), bucketName, *file.OssKey)
+	objectName := s.StorageService.GetUploadObjName(*file.MD5Hash, file.FileName)
+	err := s.StorageService.RemoveObject(context.Background(), bucketName, objectName)
 	if err != nil {
 		logger.Error("Failed to delete object from MinIO",
 			zap.String("bucket", bucketName),

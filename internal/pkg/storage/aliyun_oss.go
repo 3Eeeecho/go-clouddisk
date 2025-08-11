@@ -169,3 +169,25 @@ func (s *AliyunOSSStorageService) PreSignGetObjectURL(ctx context.Context, bucke
 	}
 	return signedURL, nil
 }
+
+// --- 分块上传实现 (待定) ---
+
+func (s *AliyunOSSStorageService) InitMultiPartUpload(ctx context.Context, bucketName, objectName string, opts PutObjectOptions) (string, error) {
+	return "", fmt.Errorf("not implemented")
+}
+
+func (s *AliyunOSSStorageService) UploadPart(ctx context.Context, bucketName, objectName, uploadID string, reader io.Reader, partNumber int, partSize int64) (UploadPartResult, error) {
+	return UploadPartResult{}, fmt.Errorf("not implemented")
+}
+
+func (s *AliyunOSSStorageService) CompleteMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string, parts []UploadPartResult) (PutObjectResult, error) {
+	return PutObjectResult{}, fmt.Errorf("not implemented")
+}
+
+func (s *AliyunOSSStorageService) AbortMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string) error {
+	return fmt.Errorf("not implemented")
+}
+
+func (s *AliyunOSSStorageService) GetUploadObjName(fileHash, fileName string) string {
+	return ""
+}

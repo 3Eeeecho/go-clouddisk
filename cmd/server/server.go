@@ -51,17 +51,16 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	// database.InitElasticsearchClient(&cfg.Elasticsearch)
 	// logger.Info("Elasticsearch client initialized.")
 
-	rabbitMQClient, err := mq.NewRabbitMQClient(cfg.RabbitMQ.URL, "file_merge_queue")
-	if err != nil {
-		logger.Fatal("Failed to connect to RabbitMQ", zap.Any("err", err))
-	}
+	// rabbitMQClient, err := mq.NewRabbitMQClient(cfg.RabbitMQ.URL, "file_merge_queue")
+	// if err != nil {
+	// 	logger.Fatal("Failed to connect to RabbitMQ", zap.Any("err", err))
+	// }
 
 	//  初始化 Repositories
 	redisCache := cache.NewRedisCache(redisClient)
 	fileRepo := repositories.NewFileRepository(mysqlDB, redisCache)
 	userRepo := repositories.NewUserRepository(mysqlDB)
 	share_repo := repositories.NewShareRepository(mysqlDB)
-	chunk_repo := repositories.NewChunkRepository(mysqlDB, redisCache)
 
 	//初始化其他服务
 	cacheService := cache.NewRedisCache(redisClient)
@@ -72,10 +71,9 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	}
 
 	//  初始化 Services
-	uploadService := explorer.NewUploadService(fileRepo, chunk_repo, tm, ss, explorer.UploadServiceDeps{
-		Cache:    cacheService,
-		MQClient: rabbitMQClient,
-		Config:   cfg,
+	uploadService := explorer.NewUploadService(fileRepo, tm, ss, explorer.UploadServiceDeps{
+		Cache:  cacheService,
+		Config: cfg,
 	})
 	domainService := explorer.NewFileDomainService(fileRepo)
 	authService := admin.NewAuthService(userRepo, &cfg.JWT)
@@ -107,7 +105,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		httpServer:     httpServer,
 		db:             mysqlDB,
 		redisClient:    redisClient,
-		rabbitMQClient: rabbitMQClient,
+		rabbitMQClient: nil,
 	}, nil
 }
 

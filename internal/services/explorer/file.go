@@ -383,7 +383,7 @@ func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
 	}
 
 	// 获取所有需要删除的文件或文件夹及其所有子项
-	filesToDelete, err := s.domainService.CollectAllFiles(fileID, userID)
+	filesToDelete, err := s.domainService.CollectAllFiles(userID, fileID)
 	if err != nil {
 		logger.Error("PermanentDeleteFile: Failed to collect files for permanent deletion", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("file service: %w", err)

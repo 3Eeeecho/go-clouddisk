@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
@@ -37,7 +36,7 @@ func NewUploadHandler(uploadService explorer.UploadService) *UploadHandler {
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Failure 409 {object} xerr.Response "文件已存在"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
-// @Router /api/v1/upload/init [post]
+// @Router /api/v1/uploads/init [post]
 func (h *UploadHandler) InitUploadHandler(c *gin.Context) {
 	currentUserID, ok := utils.GetUserIDFromContext(c)
 	if !ok {
@@ -79,16 +78,17 @@ func (h *UploadHandler) InitUploadHandler(c *gin.Context) {
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Failure 404 {object} xerr.Response "上传会话未找到"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
-// @Router /api/v1/upload/chunk [post]
+// @Router /api/v1/uploads/chunk [post]
 func (h *UploadHandler) UploadChunkHandler(c *gin.Context) {
 	currentUserID, ok := utils.GetUserIDFromContext(c)
 	if !ok {
 		return
 	}
 
+	// 从 multipart form 中获取块数据
 	file, err := c.FormFile("chunk")
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Chunk file not found")
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Chunk file not found in form")
 		return
 	}
 
@@ -99,25 +99,14 @@ func (h *UploadHandler) UploadChunkHandler(c *gin.Context) {
 	}
 	defer fileContent.Close()
 
-	fileHash := c.PostForm("file_hash")
-	chunkIndexStr := c.PostForm("chunk_index")
-
-	if fileHash == "" || chunkIndexStr == "" {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid form data: missing required fields")
+	// 从 form 中解析其他参数
+	var req models.UploadChunkRequest
+	if err := c.ShouldBind(&req); err != nil {
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, fmt.Sprintf("Invalid form data: %v", err))
 		return
 	}
 
-	chunkIndex, err := strconv.Atoi(chunkIndexStr)
-	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid chunk_index format")
-		return
-	}
-
-	req := models.UploadChunkRequest{
-		FileHash:   fileHash,
-		ChunkIndex: chunkIndex,
-	}
-
+	// 调用 service 层处理块上传
 	if err := h.uploadService.UploadChunk(c, currentUserID, &req, fileContent); err != nil {
 		if errors.Is(err, xerr.ErrUploadSessionNotFound) {
 			xerr.Error(c, http.StatusNotFound, xerr.UploadSessionNotFoundCode, err.Error())
@@ -142,7 +131,7 @@ func (h *UploadHandler) UploadChunkHandler(c *gin.Context) {
 // @Failure 400 {object} xerr.Response "参数错误"
 // @Failure 404 {object} xerr.Response "上传会话未找到"
 // @Failure 500 {object} xerr.Response "内部服务器错误"
-// @Router /api/v1/upload/complete [post]
+// @Router /api/v1/uploads/complete [post]
 func (h *UploadHandler) CompleteUploadHandler(c *gin.Context) {
 	currentUserID, ok := utils.GetUserIDFromContext(c)
 	if !ok {
@@ -173,4 +162,32 @@ func (h *UploadHandler) CompleteUploadHandler(c *gin.Context) {
 	}
 
 	xerr.Success(c, http.StatusOK, "File uploaded and merged successfully", newFile)
+}
+
+// ListPartsHandler 处理查询已上传分块的请求
+// @Summary 查询已上传的分块
+// @Description 根据 upload_id 查询已经成功上传的分块列表
+// @Tags 文件上传
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Param request body models.ListPartsRequest true "查询参数"
+// @Success 200 {object} models.ListPartsResponse "查询成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 500 {object} xerr.Response "内部服务器错误"
+// @Router /api/v1/uploads/parts [post]
+func (h *UploadHandler) ListPartsHandler(c *gin.Context) {
+	var req models.ListPartsRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body")
+		return
+	}
+
+	resp, err := h.uploadService.ListUploadedParts(c, &req)
+	if err != nil {
+		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list uploaded parts")
+		return
+	}
+
+	xerr.Success(c, http.StatusOK, "Successfully listed uploaded parts", resp)
 }

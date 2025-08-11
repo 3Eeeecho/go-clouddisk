@@ -22,6 +22,23 @@ type StorageService interface {
 	MakeBucket(ctx context.Context, bucketName string) error
 	// 获取对象的公开访问URL（如果支持）
 	GetObjectURL(bucketName, objectName string) string
+
+	// --- 分块上传方法 ---
+
+	// InitMultiPartUpload 初始化分块上传, 返回 uploadID
+	InitMultiPartUpload(ctx context.Context, bucketName, objectName string, opts PutObjectOptions) (string, error)
+
+	// UploadPart 上传文件的一个分块
+	UploadPart(ctx context.Context, bucketName, objectName, uploadID string, reader io.Reader, partNumber int, partSize int64) (UploadPartResult, error)
+
+	// CompleteMultiPartUpload 完成分块上传
+	CompleteMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string, parts []UploadPartResult) (PutObjectResult, error)
+
+	// AbortMultiPartUpload 中止分块上传
+	AbortMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string) error
+
+	//获取上传的ObjectName
+	GetUploadObjName(fileHash, fileName string) string
 }
 
 type PutObjectResult struct {
@@ -29,6 +46,16 @@ type PutObjectResult struct {
 	Key    string
 	Size   int64
 	ETag   string // 对象哈希值
+}
+
+type PutObjectOptions struct {
+	ContentType string
+	// 可根据需要添加其他选项，如用户元数据等
+}
+
+type UploadPartResult struct {
+	PartNumber int
+	ETag       string
 }
 
 type GetObjectResult struct {

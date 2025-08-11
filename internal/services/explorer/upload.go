@@ -2,11 +2,10 @@ package explorer
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
+	"sort"
+	"strconv"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
@@ -22,19 +21,20 @@ import (
 )
 
 // MergeTask 定义合并任务的消息体
-type MergeTask struct {
-	FileID         uint64
-	FileHash       string  `json:"file_hash"`
-	FileName       string  `json:"file_name"`
-	TotalChunks    int     `json:"total_chunks"`
-	UserID         uint64  `json:"user_id"`
-	ParentFolderID *uint64 `json:"parent_folder_id,omitempty"` // 用于记录文件归属
-}
+// type MergeTask struct {
+// 	FileID         uint64
+// 	FileHash       string  `json:"file_hash"`
+// 	FileName       string  `json:"file_name"`
+// 	TotalChunks    int     `json:"total_chunks"`
+// 	UserID         uint64  `json:"user_id"`
+// 	ParentFolderID *uint64 `json:"parent_folder_id,omitempty"` // 用于记录文件归属
+// }
 
 type UploadService interface {
 	UploadInit(ctx context.Context, userID uint64, req *models.UploadInitRequest) (*models.UploadInitResponse, error)
 	UploadChunk(ctx context.Context, userID uint64, req *models.UploadChunkRequest, chunkData io.Reader) error
 	UploadComplete(ctx context.Context, userID uint64, req *models.UploadCompleteRequest) (*models.File, error)
+	ListUploadedParts(ctx context.Context, req *models.ListPartsRequest) (*models.ListPartsResponse, error)
 }
 
 type UploadServiceDeps struct {
@@ -44,163 +44,173 @@ type UploadServiceDeps struct {
 }
 
 type uploadService struct {
-	fileRepo  repositories.FileRepository
-	chunkRepo repositories.ChunkRepository
-	tm        TransactionManager
-	deps      UploadServiceDeps
+	fileRepo repositories.FileRepository
+	tm       TransactionManager
+	storage  storage.StorageService
+	deps     UploadServiceDeps
 }
 
 func NewUploadService(
 	fileRepo repositories.FileRepository,
-	chunkRepo repositories.ChunkRepository,
 	tm TransactionManager,
 	ss storage.StorageService,
 	deps UploadServiceDeps,
 ) UploadService {
 	return &uploadService{
-		fileRepo:  fileRepo,
-		chunkRepo: chunkRepo,
-		tm:        tm,
-		deps:      deps,
+		fileRepo: fileRepo,
+		tm:       tm,
+		storage:  ss,
+		deps:     deps,
 	}
 }
 
-// UploadInit 检查文件是否已存在（秒传），或返回已上传的分片列表
+// UploadInit 分片上传初始化,查询是否存在已上传的文件切片或者完整的文件
 func (s *uploadService) UploadInit(ctx context.Context, userID uint64, req *models.UploadInitRequest) (*models.UploadInitResponse, error) {
-	// 1. 检查文件是否已存在 (秒传)
-	// 这里 FindFileByMD5Hash 的逻辑需要修改，以区分是不同用户但文件已存在的情况
 	existingFile, err := s.fileRepo.FindFileByMD5Hash(req.FileHash)
 	if err == nil && existingFile != nil {
-		logger.Info("UploadInit: File already exists for MD5 hash, performing instant upload",
-			zap.Uint64("userID", userID),
-			zap.String("md5Hash", req.FileHash))
+		logger.Info("UploadInit: File already exists, performing instant upload.", zap.String("md5Hash", req.FileHash))
 		return &models.UploadInitResponse{FileExists: true}, nil
 	}
 
-	// 2. 查找已上传的分片
-	chunks, err := s.chunkRepo.GetUploadedChunks(req.FileHash)
-	if err != nil {
-		logger.Error("UploadInit: Failed to get uploaded chunks", zap.String("fileHash", req.FileHash), zap.Error(err))
-		return nil, fmt.Errorf("upload service: failed to get uploaded chunks: %w", xerr.ErrDatabaseError)
-	}
+	// 文件不存在，初始化分块上传
+	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
+	bucketName := s.deps.Config.MinIO.BucketName
 
-	uploadedIndexes := make([]int, 0, len(chunks))
-	for _, chunk := range chunks {
-		uploadedIndexes = append(uploadedIndexes, chunk.ChunkIndex)
+	uploadID, err := s.storage.InitMultiPartUpload(ctx, bucketName, objectName, storage.PutObjectOptions{
+		ContentType: "application/octet-stream",
+	})
+	if err != nil {
+		logger.Error("UploadInit: Failed to init multipart upload", zap.Error(err))
+		return nil, fmt.Errorf("upload service: failed to init multipart upload: %w", err)
 	}
 
 	return &models.UploadInitResponse{
-		FileExists:     false,
-		UploadedChunks: uploadedIndexes,
+		FileExists: false,
+		UploadID:   uploadID,
 	}, nil
 }
 
-// UploadChunk 保存分片到本地临时目录并更新数据库
+// UploadChunk 处理分片上传
 func (s *uploadService) UploadChunk(ctx context.Context, userID uint64, req *models.UploadChunkRequest, chunkData io.Reader) error {
-	// 1. 将分片保存到临时目录
-	tempDir := filepath.Join(os.TempDir(), "clouddisk_chunks", req.FileHash)
-	if err := os.MkdirAll(tempDir, os.ModePerm); err != nil {
-		logger.Error("UploadChunk: Failed to create temp directory", zap.Error(err), zap.String("dir", tempDir))
-		return fmt.Errorf("upload service: failed to create temp directory: %w", err)
-	}
+	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
+	bucketName := s.deps.Config.MinIO.BucketName
 
-	tempFilePath := filepath.Join(tempDir, fmt.Sprintf("%d.chunk", req.ChunkIndex))
-	logger.Info("tempFilePath", zap.String("path:", tempFilePath))
-
-	outFile, err := os.Create(tempFilePath)
+	partResult, err := s.storage.UploadPart(ctx, bucketName, objectName, req.UploadID, chunkData, req.ChunkNumber, req.ChunkSize)
 	if err != nil {
-		logger.Error("UploadChunk: Failed to create chunk file", zap.Error(err), zap.String("path", tempFilePath))
-		return fmt.Errorf("upload service: failed to create chunk file: %w", err)
-	}
-	defer outFile.Close()
-
-	if _, err := io.Copy(outFile, chunkData); err != nil {
-		logger.Error("UploadChunk: Failed to write chunk data", zap.Error(err), zap.String("path", tempFilePath))
-		return fmt.Errorf("upload service: failed to write chunk data: %w", err)
+		logger.Error("UploadChunk: Failed to upload part", zap.Error(err), zap.String("uploadID", req.UploadID))
+		return fmt.Errorf("upload service: failed to upload part: %w", err)
 	}
 
-	// 2. 更新数据库分片状态
-	// 这里使用事务来保证原子性
-	err = s.tm.WithTransaction(ctx, func(tx *gorm.DB) error {
-		chunkRepo := repositories.NewChunkRepository(tx, nil) // 使用事务内的DB
-		chunk := models.Chunk{
-			FileHash:   req.FileHash,
-			ChunkIndex: req.ChunkIndex,
-		}
-		if err := chunkRepo.SaveChunk(&chunk); err != nil {
-			return err
-		}
-		return nil
-	})
-
+	// 将上传成功的分块信息存入 Redis
+	// 使用 Hash 存储，Key: uploadID, Field: partNumber, Value: ETag
+	redisKey := fmt.Sprintf("upload:%s:parts", req.UploadID)
+	err = s.deps.Cache.HSet(ctx, redisKey, fmt.Sprintf("%d", partResult.PartNumber), partResult.ETag)
 	if err != nil {
-		// 如果数据库操作失败，可以考虑删除已写入的临时文件
-		os.Remove(tempFilePath)
-		return fmt.Errorf("upload service: failed to save chunk record: %w", xerr.ErrDatabaseError)
+		logger.Error("UploadChunk: Failed to save part info to redis", zap.Error(err), zap.String("uploadID", req.UploadID))
+		// 注意：这里上传已经成功，但记录失败。需要考虑补偿策略或更强的事务保证。
+		// 简单起见，我们先返回错误。
+		return fmt.Errorf("upload service: failed to save part info: %w", err)
 	}
 
-	logger.Info("UploadChunk: Chunk uploaded and record saved",
-		zap.String("fileHash", req.FileHash),
-		zap.Int("chunkIndex", req.ChunkIndex))
+	logger.Info("UploadChunk: Part uploaded successfully",
+		zap.String("uploadID", req.UploadID),
+		zap.Int("partNumber", partResult.PartNumber),
+		zap.String("etag", partResult.ETag))
+
 	return nil
 }
 
-// UploadComplete 合并所有分片，上传到OSS，并创建文件记录
+// UploadComplete now only creates the final file metadata record in the database.
 func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *models.UploadCompleteRequest) (*models.File, error) {
-	// 1. 验证所有分片是否都已上传
-	uploadedCount, err := s.chunkRepo.CountUploadedChunks(req.FileHash)
-	if err != nil || uploadedCount != int64(req.TotalChunks) {
-		logger.Warn("UploadComplete: Not all chunks uploaded",
-			zap.String("fileHash", req.FileHash),
-			zap.Int64("uploaded", uploadedCount),
-			zap.Int("total", req.TotalChunks))
-		return nil, fmt.Errorf("upload service: %w", xerr.ErrChunkMissing)
+	redisKey := generatePartKey(req.UploadID)
+	partsMap, err := s.deps.Cache.HGetAll(ctx, redisKey)
+	if err != nil {
+		logger.Error("UploadComplete: Failed to get parts from redis", zap.Error(err), zap.String("uploadID", req.UploadID))
+		return nil, fmt.Errorf("upload service: failed to get parts info: %w", err)
 	}
+
+	var parts []storage.UploadPartResult
+	for partNumberStr, etag := range partsMap {
+		partNumber, _ := strconv.Atoi(partNumberStr)
+		parts = append(parts, storage.UploadPartResult{
+			PartNumber: partNumber,
+			ETag:       etag,
+		})
+	}
+
+	// 为了保证顺序，最好对 parts 按 PartNumber 排序
+	sort.Slice(parts, func(i, j int) bool {
+		return parts[i].PartNumber < parts[j].PartNumber
+	})
+
+	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
+	bucketName := s.deps.Config.MinIO.BucketName
+
+	putResult, err := s.storage.CompleteMultiPartUpload(ctx, bucketName, objectName, req.UploadID, parts)
+	if err != nil {
+		logger.Error("UploadComplete: Failed to complete multipart upload", zap.Error(err), zap.String("uploadID", req.UploadID))
+		// 考虑调用 AbortMultipartUpload 清理
+		_ = s.storage.AbortMultiPartUpload(ctx, bucketName, objectName, req.UploadID)
+		return nil, fmt.Errorf("upload service: failed to complete multipart upload: %w", err)
+	}
+
+	// 清理 Redis 中的缓存
+	defer s.deps.Cache.Del(ctx, redisKey)
 
 	var newFile *models.File
 	err = s.tm.WithTransaction(ctx, func(tx *gorm.DB) error {
-		// 在事务中创建文件记录
-		fileRepo := repositories.NewFileRepository(tx, s.deps.Cache) // 使用事务内的DB
+		fileRepo := repositories.NewFileRepository(tx, s.deps.Cache)
 		newFile = &models.File{
 			UserID:         userID,
 			UUID:           uuid.NewString(),
 			FileName:       req.FileName,
 			ParentFolderID: req.ParentFolderID,
-			Path:           "/", //TODO 根据ParentFolderID获取路径
+			Path:           "/", // TODO: 确定路径
 			IsFolder:       0,
 			MD5Hash:        &req.FileHash,
 			Status:         1,
+			Size:           uint64(putResult.Size), // 使用完成上传后返回的准确大小
+			OssKey:         &putResult.Key,
+			OssBucket:      &putResult.Bucket,
 		}
 		if createErr := fileRepo.Create(newFile); createErr != nil {
 			logger.Error("UploadComplete: Failed to create file record", zap.Error(createErr))
 			return fmt.Errorf("upload service: failed to create file record: %w", xerr.ErrDatabaseError)
 		}
-
-		task := &MergeTask{
-			FileID:         newFile.ID,
-			FileHash:       req.FileHash,
-			FileName:       req.FileName,
-			TotalChunks:    req.TotalChunks,
-			UserID:         userID,
-			ParentFolderID: req.ParentFolderID,
-		}
-		taskBytes, err := json.Marshal(task)
-		if err != nil {
-			logger.Error("UploadComplete: Failed to marshal merge task", zap.Error(err))
-			return fmt.Errorf("upload service: failed to marshal merge task: %w", err)
-		}
-
-		if err := s.deps.MQClient.Publish(taskBytes); err != nil {
-			logger.Error("UploadComplete: Failed to publish merge task", zap.Error(err))
-			return fmt.Errorf("upload service: failed to publish merge task: %w", xerr.ErrMQError)
-		}
-
 		return nil
 	})
+
 	if err != nil {
 		return nil, err
 	}
 
-	logger.Info("Merge task published to RabbitMQ", zap.String("fileHash", req.FileHash), zap.Uint64("userID", userID))
+	logger.Info("File record created successfully", zap.String("fileHash", req.FileHash), zap.Uint64("fileID", newFile.ID))
 	return newFile, nil
+}
+
+func (s *uploadService) ListUploadedParts(ctx context.Context, req *models.ListPartsRequest) (*models.ListPartsResponse, error) {
+	redisKey := generatePartKey(req.UploadID)
+	partsMap, err := s.deps.Cache.HGetAll(ctx, redisKey)
+	if err != nil {
+		logger.Error("ListUploadedParts: Failed to get parts from redis", zap.Error(err), zap.String("uploadID", req.UploadID))
+		return nil, fmt.Errorf("upload service: failed to list parts from redis: %w", err)
+	}
+
+	uploadedParts := make([]int, 0, len(partsMap))
+	for partNumberStr := range partsMap {
+		partNumber, err := strconv.Atoi(partNumberStr)
+		if err == nil {
+			uploadedParts = append(uploadedParts, partNumber)
+		}
+	}
+
+	sort.Ints(uploadedParts) // 保证返回的列表是有序的
+
+	return &models.ListPartsResponse{
+		UploadedParts: uploadedParts,
+	}, nil
+}
+
+func generatePartKey(uploadID string) string {
+	return fmt.Sprintf("upload:%s:parts", uploadID)
 }

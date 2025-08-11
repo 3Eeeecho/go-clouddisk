@@ -16,23 +16,33 @@ import (
 
 type MinIOStorageService struct {
 	client *minio.Client
+	core   *minio.Core
 	cfg    *config.MinIOConfig // MinIO的配置信息
 }
 
 // NewMinIOStorageService 创建并返回一个 MinIOStorageService 实例
 func NewMinIOStorageService(cfg *config.MinIOConfig) (*MinIOStorageService, error) {
-	minioClient, err := minio.New(cfg.Endpoint, &minio.Options{
+	opts := &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
 		Secure: cfg.UseSSL, // 根据配置决定是否使用 HTTPS
-	})
+	}
+
+	minioClient, err := minio.New(cfg.Endpoint, opts)
 	if err != nil {
 		logger.Error("初始化 MinIO 客户端失败", zap.Error(err))
 		return nil, fmt.Errorf("无法初始化 MinIO 客户端: %w", err)
 	}
 
-	logger.Info("MinIO 客户端初始化成功", zap.String("endpoint", cfg.Endpoint))
+	minioCore, err := minio.NewCore(cfg.Endpoint, opts)
+	if err != nil {
+		logger.Error("初始化 MinIO Core 失败", zap.Error(err))
+		return nil, fmt.Errorf("无法初始化 MinIO Core: %w", err)
+	}
+
+	logger.Info("MinIO 客户端和 Core 初始化成功", zap.String("endpoint", cfg.Endpoint))
 	return &MinIOStorageService{
 		client: minioClient,
+		core:   minioCore,
 		cfg:    cfg,
 	}, nil
 }
@@ -127,4 +137,57 @@ func (s *MinIOStorageService) PreSignGetObjectURL(ctx context.Context, bucketNam
 		return "", fmt.Errorf("生成 MinIO 预签名URL失败: %w", err)
 	}
 	return presignedURL.String(), nil
+}
+
+// --- 分块上传实现 ---
+
+func (s *MinIOStorageService) InitMultiPartUpload(ctx context.Context, bucketName, objectName string, opts PutObjectOptions) (string, error) {
+	uploadID, err := s.core.NewMultipartUpload(ctx, bucketName, objectName, minio.PutObjectOptions{
+		ContentType: opts.ContentType,
+	})
+	if err != nil {
+		return "", fmt.Errorf("MinIO 初始化分块上传失败: %w", err)
+	}
+	return uploadID, nil
+}
+
+func (s *MinIOStorageService) UploadPart(ctx context.Context, bucketName, objectName, uploadID string, reader io.Reader, partNumber int, partSize int64) (UploadPartResult, error) {
+	uploadInfo, err := s.core.PutObjectPart(ctx, bucketName, objectName, uploadID, partNumber, reader, partSize, minio.PutObjectPartOptions{})
+	if err != nil {
+		return UploadPartResult{}, fmt.Errorf("MinIO 上传分块失败: %w", err)
+	}
+	return UploadPartResult{
+		PartNumber: uploadInfo.PartNumber,
+		ETag:       uploadInfo.ETag,
+	}, nil
+}
+
+func (s *MinIOStorageService) CompleteMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string, parts []UploadPartResult) (PutObjectResult, error) {
+	var completeParts []minio.CompletePart
+	for _, part := range parts {
+		completeParts = append(completeParts, minio.CompletePart{
+			PartNumber: part.PartNumber,
+			ETag:       part.ETag,
+		})
+	}
+
+	uploadInfo, err := s.core.CompleteMultipartUpload(ctx, bucketName, objectName, uploadID, completeParts, minio.PutObjectOptions{})
+	if err != nil {
+		return PutObjectResult{}, fmt.Errorf("MinIO 完成分块上传失败: %w", err)
+	}
+
+	return PutObjectResult{
+		Bucket: uploadInfo.Bucket,
+		Key:    uploadInfo.Key,
+		Size:   uploadInfo.Size,
+		ETag:   uploadInfo.ETag,
+	}, nil
+}
+
+func (s *MinIOStorageService) AbortMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string) error {
+	return s.core.AbortMultipartUpload(ctx, bucketName, objectName, uploadID)
+}
+
+func (s *MinIOStorageService) GetUploadObjName(fileHash, fileName string) string {
+	return fmt.Sprintf("uploads/%s/%s", fileHash, fileName)
 }

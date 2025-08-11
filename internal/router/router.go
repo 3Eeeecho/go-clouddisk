@@ -93,6 +93,7 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			uploadRoutes.POST("/init", uploadHandler.InitUploadHandler)
 			uploadRoutes.POST("/chunk", uploadHandler.UploadChunkHandler)
 			uploadRoutes.POST("/complete", uploadHandler.CompleteUploadHandler)
+			uploadRoutes.POST("/parts", uploadHandler.ListPartsHandler)
 		}
 	}
 
