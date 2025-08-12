@@ -7,10 +7,10 @@ import (
 )
 
 const (
-	MergeStatusPending uint8 = 0
-	MergeStatusMerging uint8 = 1
-	MergeStatusSuccess uint8 = 2
-	MergeStatusFailed  uint8 = 3
+	StatusDeleted  = 0 // 已删除 (软删除)
+	StatusNormal   = 1 // 正常
+	StatusBanned   = 2 // 被禁用
+	StatusDeleting = 3 // 待删除 (进入异步删除队列)
 )
 
 // File 对应 files 表

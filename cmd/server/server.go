@@ -12,6 +12,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/mq"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/mq/worker"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
 	"github.com/3Eeeecho/go-clouddisk/internal/router"
@@ -51,10 +52,11 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	// database.InitElasticsearchClient(&cfg.Elasticsearch)
 	// logger.Info("Elasticsearch client initialized.")
 
-	// rabbitMQClient, err := mq.NewRabbitMQClient(cfg.RabbitMQ.URL, "file_merge_queue")
-	// if err != nil {
-	// 	logger.Fatal("Failed to connect to RabbitMQ", zap.Any("err", err))
-	// }
+	//初始化rabbitmq
+	rabbitMQClient, err := mq.NewRabbitMQClient(cfg.RabbitMQ.URL)
+	if err != nil {
+		logger.Fatal("Failed to connect to RabbitMQ", zap.Any("err", err))
+	}
 
 	//  初始化 Repositories
 	redisCache := cache.NewRedisCache(redisClient)
@@ -72,12 +74,13 @@ func NewServer(cfg *config.Config) (*Server, error) {
 
 	//  初始化 Services
 	uploadService := explorer.NewUploadService(fileRepo, tm, ss, explorer.UploadServiceDeps{
-		Cache:  cacheService,
-		Config: cfg,
+		Cache:    cacheService,
+		MQClient: rabbitMQClient,
+		Config:   cfg,
 	})
 	domainService := explorer.NewFileDomainService(fileRepo)
 	authService := admin.NewAuthService(userRepo, &cfg.JWT)
-	fileService := explorer.NewFileService(fileRepo, domainService, tm, ss, cfg)
+	fileService := explorer.NewFileService(fileRepo, domainService, tm, ss, rabbitMQClient, cfg)
 	shareService := share.NewShareService(share_repo, fileRepo, fileService, domainService, cfg)
 	userService := admin.NewUserService(userRepo)
 
@@ -87,6 +90,9 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	shareHandler := handlers.NewShareHandler(shareService, cfg)
 	uploadHandler := handlers.NewUploadHandler(uploadService)
 	userHandler := handlers.NewUserHandler(userService)
+
+	// 启动所有后台 Worker
+	worker.StartAllWorkers(config.AppConfig, rabbitMQClient, fileRepo, ss)
 
 	// 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig
@@ -105,7 +111,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		httpServer:     httpServer,
 		db:             mysqlDB,
 		redisClient:    redisClient,
-		rabbitMQClient: nil,
+		rabbitMQClient: rabbitMQClient,
 	}, nil
 }
 
@@ -116,12 +122,8 @@ func (s *Server) Run(ctx context.Context, stopChan chan os.Signal) {
 	defer s.rabbitMQClient.Close()
 	defer s.redisClient.Close()
 
-	// 启动 Worker
-	// go s.worker.Start(ctx)
-
 	// 启动 HTTP 服务器
 	go func() {
-		logger.Info(fmt.Sprintf("Server is running on %s", s.httpServer.Addr))
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Fatal("Server failed to start", zap.Error(err))
 		}

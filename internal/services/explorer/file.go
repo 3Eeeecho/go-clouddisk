@@ -2,6 +2,7 @@ package explorer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
+	"github.com/3Eeeecho/go-clouddisk/internal/pkg/mq"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/storage"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/repositories"
@@ -36,8 +38,8 @@ type FileService interface {
 	Download(ctx context.Context, userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)
 
 	// 文件删除
-	SoftDeleteFile(userID uint64, fileID uint64) error
-	PermanentDeleteFile(userID uint64, fileID uint64) error
+	SoftDelete(userID uint64, fileID uint64) error
+	PermanentDelete(userID uint64, fileID uint64) error
 
 	// 回收站操作
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
@@ -53,6 +55,7 @@ type fileService struct {
 	domainService      FileDomainService  // 业务逻辑
 	transactionManager TransactionManager // 事务管理
 	StorageService     storage.StorageService
+	mqClient           *mq.RabbitMQClient
 	cfg                *config.Config
 }
 
@@ -64,6 +67,7 @@ func NewFileService(
 	domainService FileDomainService,
 	transactionManager TransactionManager,
 	storageService storage.StorageService,
+	mqClient *mq.RabbitMQClient,
 	cfg *config.Config,
 ) FileService {
 	return &fileService{
@@ -71,6 +75,7 @@ func NewFileService(
 		domainService:      domainService,
 		transactionManager: transactionManager,
 		StorageService:     storageService,
+		mqClient:           mqClient,
 		cfg:                cfg,
 	}
 }
@@ -354,7 +359,7 @@ func (s *fileService) Download(ctx context.Context, userID uint64, fileID uint64
 }
 
 // 文件删除
-func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
+func (s *fileService) SoftDelete(userID uint64, fileID uint64) error {
 	// 验证文件
 	_, err := s.domainService.CheckFile(userID, fileID)
 	if err != nil {
@@ -375,23 +380,49 @@ func (s *fileService) SoftDeleteFile(userID uint64, fileID uint64) error {
 	})
 }
 
-func (s *fileService) PermanentDeleteFile(userID uint64, fileID uint64) error {
+func (s *fileService) PermanentDelete(userID uint64, fileID uint64) error {
 	// 验证文件
-	_, err := s.domainService.CheckFile(userID, fileID)
+	file, err := s.fileRepo.FindByID(fileID)
 	if err != nil {
-		return err
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			logger.Warn("PermanentDeleteFile: File not found in DB", zap.Uint64("fileID", fileID))
+			return fmt.Errorf("domain service: %w", xerr.ErrFileNotFound)
+		}
+		logger.Error("PermanentDeleteFile: Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
+		return fmt.Errorf("file service: failed to retrieve file: %w", xerr.ErrDatabaseError)
 	}
 
-	// 获取所有需要删除的文件或文件夹及其所有子项
-	filesToDelete, err := s.domainService.CollectAllFiles(userID, fileID)
-	if err != nil {
-		logger.Error("PermanentDeleteFile: Failed to collect files for permanent deletion", zap.Uint64("fileID", fileID), zap.Error(err))
-		return fmt.Errorf("file service: %w", err)
+	if userID != file.UserID {
+		logger.Warn("File access denied",
+			zap.Uint64("fileID", file.ID),
+			zap.Uint64("userID", userID),
+			zap.Uint64("ownerID", file.UserID))
+		return fmt.Errorf("file service: %w", xerr.ErrPermissionDenied)
 	}
 
-	//需要反转文件切片,从尾部开始删除
-	slices.Reverse(filesToDelete)
+	// 开启事务
 	return s.transactionManager.WithTransaction(context.Background(), func(tx *gorm.DB) error {
-		return s.performPermanentDelete(filesToDelete, userID)
+		// 1. 更新文件状态为“待删除”
+		if err := s.fileRepo.UpdateFileStatus(fileID, models.StatusDeleting); err != nil {
+			logger.Error("PermanentDeleteFile: Failed to update file status to deleting", zap.Uint64("fileID", fileID), zap.Error(err))
+			return fmt.Errorf("file service: failed to update file status: %w", xerr.ErrDatabaseError)
+		}
+
+		// 2. 发送删除任务到 RabbitMQ
+		task := models.DeleteFileTask{
+			FileID: file.ID,
+			UserID: file.UserID,
+			OssKey: *file.OssKey,
+		}
+		taskBody, _ := json.Marshal(task)
+
+		if err := s.mqClient.Publish("file_delete_queue", taskBody); err != nil {
+			logger.Error("PermanentDeleteFile: Failed to publish delete task to RabbitMQ", zap.Uint64("fileID", fileID), zap.Error(err))
+			// 注意：这里事务会回滚，文件状态将恢复。
+			return fmt.Errorf("file service: failed to publish delete task: %w", xerr.ErrMQError)
+		}
+
+		logger.Info("PermanentDeleteFile: Successfully marked file for deletion and published task", zap.Uint64("fileID", fileID))
+		return nil
 	})
 }

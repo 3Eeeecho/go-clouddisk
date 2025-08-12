@@ -66,6 +66,7 @@ func NewUploadService(
 
 // UploadInit 分片上传初始化,查询是否存在已上传的文件切片或者完整的文件
 func (s *uploadService) UploadInit(ctx context.Context, userID uint64, req *models.UploadInitRequest) (*models.UploadInitResponse, error) {
+	//查找是否存在相同文件,秒传逻辑
 	existingFile, err := s.fileRepo.FindFileByMD5Hash(req.FileHash)
 	if err == nil && existingFile != nil {
 		logger.Info("UploadInit: File already exists, performing instant upload.", zap.String("md5Hash", req.FileHash))

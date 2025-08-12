@@ -40,6 +40,7 @@ type FileRepository interface {
 	Update(file *models.File) error
 	SoftDelete(id uint64) error      // 软删除文件
 	PermanentDelete(id uint64) error // 永久删除文件
+	UpdateFileStatus(fileID uint64, status uint8) error
 
 	getFilesFromCacheList(ctx context.Context, listCacheKey string) ([]models.File, error)
 	saveFilesToCacheList(ctx context.Context, cacheKey string, files []models.File, scoreFunc func(file models.File) float64) error
@@ -530,7 +531,7 @@ func (r *fileRepository) PermanentDelete(id uint64) error {
 	pipe.ZRem(ctx, listCacheKey, strconv.FormatUint(file.ID, 10))
 
 	// 从回收站列表 Sorted Set 中移除 (如果它在回收站的话)
-	deletedListCacheKey := fmt.Sprintf("files:deleted:user:%d", file.UserID)
+	deletedListCacheKey := cache.GenerateDeletedFilesKey(file.UserID)
 	pipe.ZRem(ctx, deletedListCacheKey, strconv.FormatUint(file.ID, 10))
 
 	if file.MD5Hash != nil && *file.MD5Hash != "" {
@@ -590,6 +591,39 @@ func (r *fileRepository) UpdateFilesPathInBatch(userID uint64, oldPathPrefix, ne
 		// 消息发送失败不返回错误，但需记录日志并告警
 		logger.Error("Failed to publish cache path invalidation message", zap.Error(err))
 	}
+	return nil
+}
+
+func (r *fileRepository) UpdateFileStatus(fileID uint64, status uint8) error {
+	// 更新数据库
+	if err := r.db.Model(&models.File{}).Where("id = ?", fileID).Update("status", status).Error; err != nil {
+		logger.Error("UpdateFileStatus: Failed to update file status in DB", zap.Uint64("fileID", fileID), zap.Uint8("status", status), zap.Error(err))
+		return fmt.Errorf("failed to update file status: %w", err)
+	}
+
+	// 异步缓存更新
+	ctx := context.Background()
+	file, err := r.FindByID(fileID)
+	if err != nil {
+		logger.Error("UpdateFileStatus: Failed to find file for cache invalidation", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil // 数据库已更新，缓存问题不应阻塞主流程
+	}
+
+	message := cache.CacheUpdateMessage{
+		File: *file,
+	}
+	messageJSON, _ := json.Marshal(message)
+
+	_, streamErr := r.cache.XAdd(ctx, &redis.XAddArgs{
+		Stream: "file_cache_updates",
+		MaxLen: 10000,
+		Values: map[string]any{"payload": messageJSON},
+	}).Result()
+
+	if streamErr != nil {
+		logger.Error("UpdateFileStatus: Failed to publish cache update message", zap.Uint64("fileID", fileID), zap.Error(streamErr))
+	}
+
 	return nil
 }
 

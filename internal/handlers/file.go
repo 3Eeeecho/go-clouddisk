@@ -279,7 +279,7 @@ func (h *FileHandler) SoftDeleteFile(c *gin.Context) {
 		return
 	}
 
-	err = h.fileService.SoftDeleteFile(currentUserID, fileID)
+	err = h.fileService.SoftDelete(currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
 			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
@@ -316,7 +316,7 @@ func (h *FileHandler) PermanentDeleteFile(c *gin.Context) {
 		return
 	}
 
-	err = h.fileService.PermanentDeleteFile(currentUserID, fileID)
+	err = h.fileService.PermanentDelete(currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
 			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
