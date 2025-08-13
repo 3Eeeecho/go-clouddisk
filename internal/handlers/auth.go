@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/3Eeeecho/go-clouddisk/internal/services/admin"
 	"github.com/gin-gonic/gin"
@@ -50,7 +51,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	var req RegisterRequest
 	if err := c.ShouldBind(&req); err != nil {
 		// 参数绑定错误，使用通用错误响应
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, err.Error())
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, err.Error())
 		return
 	}
 
@@ -58,19 +59,19 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	if err != nil {
 		// 根据错误类型返回不同的状态码和业务码
 		if errors.Is(err, xerr.ErrUserAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.UserAlreadyExistsCode, err.Error())
+			response.Error(c, http.StatusConflict, xerr.UserAlreadyExistsCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrEmailAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.EmailAlreadyExistsCode, err.Error())
+			response.Error(c, http.StatusConflict, xerr.EmailAlreadyExistsCode, err.Error())
 			return
 		}
 		// 其他内部服务器错误
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "注册失败")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "注册失败")
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "注册成功", nil)
+	response.Success(c, http.StatusOK, "注册成功", nil)
 }
 
 // @Summary 用户登录
@@ -86,26 +87,26 @@ func (h *AuthHandler) Register(c *gin.Context) {
 func (h *AuthHandler) Login(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, err.Error())
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, err.Error())
 		return
 	}
 
 	token, err := h.authService.LoginUser(req.Identifier, req.Password)
 	if err != nil {
 		if errors.Is(err, xerr.ErrUserNotFound) {
-			xerr.Error(c, http.StatusUnauthorized, xerr.UserNotFoundCode, "用户不存在")
+			response.Error(c, http.StatusUnauthorized, xerr.UserNotFoundCode, "用户不存在")
 
 			return
 		}
 		if errors.Is(err, xerr.ErrInvalidCredentials) {
-			xerr.Error(c, http.StatusUnauthorized, xerr.InvalidCredentialsCode, "账户名或密码错误")
+			response.Error(c, http.StatusUnauthorized, xerr.InvalidCredentialsCode, "账户名或密码错误")
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "登陆失败")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "登陆失败")
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "登录成功", gin.H{"token": token})
+	response.Success(c, http.StatusOK, "登录成功", gin.H{"token": token})
 }
 
 // @Summary 刷新Token
@@ -116,5 +117,5 @@ func (h *AuthHandler) Login(c *gin.Context) {
 // @Router /api/v1/auth/refresh [post]
 func (h *AuthHandler) RefreshToken(c *gin.Context) {
 	//TODO
-	xerr.Success(c, http.StatusOK, "Refresh token endpoint - To be implemented", nil)
+	response.Success(c, http.StatusOK, "Refresh token endpoint - To be implemented", nil)
 }

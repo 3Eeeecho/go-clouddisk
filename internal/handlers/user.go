@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
@@ -44,15 +45,15 @@ func (h *UserHandler) GetUserProfile(c *gin.Context) {
 	user, err := h.userService.GetUserProfile(currentUserID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrUserNotFound) {
-			xerr.AbortWithError(c, http.StatusNotFound, xerr.UserNotFoundCode, "未找到用户资料")
+			response.AbortWithError(c, http.StatusNotFound, xerr.UserNotFoundCode, "未找到用户资料")
 		} else {
 			logger.Error("GetMyProfile: 获取用户资料失败",
 				zap.Uint64("userID", currentUserID),
 				zap.Error(err))
-			xerr.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "检索用户资料失败")
+			response.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "检索用户资料失败")
 		}
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "成功获取用户资料", user)
+	response.Success(c, http.StatusOK, "成功获取用户资料", user)
 }

@@ -40,6 +40,29 @@ func NewMinIOStorageService(cfg *config.MinIOConfig) (*MinIOStorageService, erro
 	}
 
 	logger.Info("MinIO 客户端和 Core 初始化成功", zap.String("endpoint", cfg.Endpoint))
+
+	// 检查并创建存储桶，然后开启版本控制
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	exists, err := minioClient.BucketExists(ctx, cfg.BucketName)
+	if err != nil {
+		return nil, fmt.Errorf("检查 MinIO 存储桶存在性失败: %w", err)
+	}
+	if !exists {
+		if err := minioClient.MakeBucket(ctx, cfg.BucketName, minio.MakeBucketOptions{}); err != nil {
+			return nil, fmt.Errorf("创建 MinIO 存储桶失败: %w", err)
+		}
+		logger.Info("MinIO 存储桶创建成功", zap.String("bucketName", cfg.BucketName))
+	}
+
+	// 开启版本控制
+	versioningConfig := minio.BucketVersioningConfiguration{Status: "Enabled"}
+	if err := minioClient.SetBucketVersioning(ctx, cfg.BucketName, versioningConfig); err != nil {
+		return nil, fmt.Errorf("开启 MinIO 存储桶版本控制失败: %w", err)
+	}
+	logger.Info("MinIO 存储桶版本控制已开启", zap.String("bucketName", cfg.BucketName))
+
 	return &MinIOStorageService{
 		client: minioClient,
 		core:   minioCore,
@@ -55,10 +78,11 @@ func (s *MinIOStorageService) PutObject(ctx context.Context, bucketName, objectN
 		return PutObjectResult{}, fmt.Errorf("MinIO 上传文件失败: %w", err)
 	}
 	return PutObjectResult{
-		Bucket: info.Bucket,
-		Key:    info.Key,
-		Size:   info.Size,
-		ETag:   info.ETag,
+		Bucket:    info.Bucket,
+		Key:       info.Key,
+		Size:      info.Size,
+		ETag:      info.ETag,
+		VersionID: info.VersionID,
 	}, nil
 }
 
@@ -85,14 +109,51 @@ func (s *MinIOStorageService) GetObject(ctx context.Context, bucketName, objectN
 	}, nil
 }
 
-func (s *MinIOStorageService) RemoveObject(ctx context.Context, bucketName, objectName string) error {
-	opts := minio.RemoveObjectOptions{
-		GovernanceBypass: true, // 如果需要，可以绕过保留策略
+// 从指定存储桶删除指定版本文件
+func (s *MinIOStorageService) RemoveObject(ctx context.Context, bucketName, objectName, VersionID string) error {
+	opts := &minio.RemoveObjectOptions{
+		GovernanceBypass: true,
+		VersionID:        VersionID,
 	}
-	err := s.client.RemoveObject(ctx, bucketName, objectName, opts)
+	err := s.client.RemoveObject(ctx, bucketName, objectName, *opts)
 	if err != nil {
-		return fmt.Errorf("MinIO 删除文件失败: %w", err)
+		return fmt.Errorf("failed to remove object version: %w", err)
 	}
+	return nil
+}
+
+func (s *MinIOStorageService) RemoveObjects(ctx context.Context, bucketName, objectName string) error {
+	//TODO 对重要版本添加标记防止被自动删除
+	objectsCh := make(chan minio.ObjectInfo)
+
+	go func() {
+		defer close(objectsCh)
+		// 列出桶内Object所有版本号,并发送到channel
+		for object := range s.client.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
+			Prefix:       objectName,
+			Recursive:    true,
+			WithVersions: true,
+		}) {
+			if object.Err != nil {
+				logger.Error("Error listing objects", zap.Error(object.Err))
+				return
+			}
+			objectsCh <- object
+		}
+	}()
+
+	opts := minio.RemoveObjectsOptions{
+		GovernanceBypass: true,
+	}
+
+	//删除所有版本的物理文件
+	errorCh := s.client.RemoveObjects(ctx, bucketName, objectsCh, opts)
+
+	// 从errChannel检查错误
+	for e := range errorCh {
+		logger.Error("Failed to remove object", zap.String("object", e.ObjectName), zap.String("version", e.VersionID), zap.Error(e.Err))
+	}
+
 	return nil
 }
 
@@ -176,11 +237,28 @@ func (s *MinIOStorageService) CompleteMultiPartUpload(ctx context.Context, bucke
 		return PutObjectResult{}, fmt.Errorf("MinIO 完成分块上传失败: %w", err)
 	}
 
+	// 后备方案：在合并后立即获取对象信息，以确保获取到正确的文件大小
+	objInfo, err := s.client.StatObject(ctx, bucketName, objectName, minio.StatObjectOptions{
+		VersionID: uploadInfo.VersionID, // 确保获取的是刚刚创建的版本的 stat
+	})
+	if err != nil {
+		logger.Error("MinIO StatObject after complete failed", zap.Error(err), zap.String("objectName", objectName))
+		// 即使 stat 失败，也返回从 CompleteMultipartUpload 获得的信息，避免整个操作失败
+		return PutObjectResult{
+			Bucket:    uploadInfo.Bucket,
+			Key:       uploadInfo.Key,
+			Size:      uploadInfo.Size, // 可能是 0
+			ETag:      uploadInfo.ETag,
+			VersionID: uploadInfo.VersionID,
+		}, nil
+	}
+
 	return PutObjectResult{
-		Bucket: uploadInfo.Bucket,
-		Key:    uploadInfo.Key,
-		Size:   uploadInfo.Size,
-		ETag:   uploadInfo.ETag,
+		Bucket:    bucketName, // 直接使用传入的 bucketName
+		Key:       objInfo.Key,
+		Size:      objInfo.Size, // 使用 StatObject 返回的权威大小
+		ETag:      objInfo.ETag,
+		VersionID: objInfo.VersionID,
 	}, nil
 }
 
@@ -189,5 +267,32 @@ func (s *MinIOStorageService) AbortMultiPartUpload(ctx context.Context, bucketNa
 }
 
 func (s *MinIOStorageService) GetUploadObjName(fileHash, fileName string) string {
-	return fmt.Sprintf("uploads/%s/%s", fileHash, fileName)
+	// 结论：`fileHash` 必须从 `objectName` 的生成中移除。
+	// 我将使用 `fileName`，并接受在多用户环境下可能存在的冲突，作为一个临时修复。
+	// TODO 长期来看，必须重构。
+	return fmt.Sprintf("uploads/%s", fileName)
+}
+
+func (s *MinIOStorageService) ListObjectParts(ctx context.Context, bucketName, objectName, uploadID string) ([]UploadPartResult, error) {
+	partsInfo, err := s.core.ListObjectParts(ctx, bucketName, objectName, uploadID, 0, 10000)
+	if err != nil {
+		return nil, fmt.Errorf("MinIO 列出已上传分块失败: %w", err)
+	}
+
+	var parts []UploadPartResult
+	for _, part := range partsInfo.ObjectParts {
+		parts = append(parts, UploadPartResult{
+			PartNumber: part.PartNumber,
+			ETag:       part.ETag,
+		})
+	}
+	return parts, nil
+}
+
+func (s *MinIOStorageService) IsUploadIDNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	// MinIO a "NoSuchUpload" error code when the upload ID does not exist.
+	return strings.Contains(err.Error(), "The specified multipart upload does not exist")
 }

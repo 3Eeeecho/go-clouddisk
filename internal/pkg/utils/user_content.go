@@ -3,6 +3,7 @@ package utils
 import (
 	"net/http"
 
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/gin-gonic/gin"
 )
@@ -12,12 +13,12 @@ import (
 func GetUserIDFromContext(c *gin.Context) (uint64, bool) {
 	userID, exists := c.Get("userID")
 	if !exists {
-		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "User ID not found in context")
+		response.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "User ID not found in context")
 		return 0, false
 	}
 	currentUserID, ok := userID.(uint64)
 	if !ok {
-		xerr.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Invalid user ID type in context")
+		response.AbortWithError(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Invalid user ID type in context")
 		return 0, false
 	}
 	return currentUserID, true

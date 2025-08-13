@@ -29,8 +29,9 @@ type FileRepository interface {
 	//FindByUserID(userID uint64) ([]models.File, error)                                          // 获取用户所有文件
 	FindByUserIDAndParentFolderID(userID uint64, parentFolderID *uint64) ([]models.File, error) // 获取指定文件夹下的文件
 	FindByPath(path string) (*models.File, error)
-	FindByUUID(uuid string) (*models.File, error)                  // 根据 UUID 查找
-	FindByOssKey(ossKey string) (*models.File, error)              //根据 OssKey 查找
+	FindByUUID(uuid string) (*models.File, error)     // 根据 UUID 查找
+	FindByOssKey(ossKey string) (*models.File, error) //根据 OssKey 查找
+	FindByFileName(userID uint64, parentFolderID *uint64, fileName string) (*models.File, error)
 	FindFileByMD5Hash(md5Hash string) (*models.File, error)        // 根据存储路径查找文件
 	FindDeletedFilesByUserID(userID uint64) ([]models.File, error) //查找回收站中的文件
 	FindChildrenByPathPrefix(userID uint64, pathPrefix string) ([]models.File, error)
@@ -38,8 +39,8 @@ type FileRepository interface {
 
 	UpdateFilesPathInBatch(userID uint64, oldPathPrefix, newPathPrefix string) error
 	Update(file *models.File) error
-	SoftDelete(id uint64) error      // 软删除文件
-	PermanentDelete(id uint64) error // 永久删除文件
+	SoftDelete(id uint64) error          // 软删除文件
+	PermanentDelete(fileID uint64) error // 永久删除文件
 	UpdateFileStatus(fileID uint64, status uint8) error
 
 	getFilesFromCacheList(ctx context.Context, listCacheKey string) ([]models.File, error)
@@ -109,7 +110,7 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 	resultMap, err := r.cache.HGetAll(ctx, fileMetadataKey)
 	if err == nil {
 		if _, ok := resultMap["__NOT_FOUND__"]; ok {
-			return nil, fmt.Errorf("file repository: %w", xerr.ErrEmptyCache) //  如果从缓存命中不存在标记，直接返回不存在错误
+			return nil, xerr.ErrFileNotFound //  如果从缓存命中不存在标记，直接返回不存在错误
 		}
 		file, err := mapper.MapToFile(resultMap) // 辅助函数将 map[string]string 映射到 models.File
 		if err == nil {
@@ -128,7 +129,7 @@ func (r *fileRepository) FindByID(id uint64) (*models.File, error) {
 			// 如果数据库中也不存在，缓存一个空值，防止缓存穿透
 			r.cache.HSet(ctx, fileMetadataKey, "__NOT_FOUND__", "1")
 			r.cache.Expire(ctx, fileMetadataKey, 1*time.Minute)
-			return nil, fmt.Errorf("file repository: %w", xerr.ErrFileNotFound) // 文件未找到
+			return nil, xerr.ErrFileNotFound // 文件未找到
 		}
 		return nil, fmt.Errorf("file not found: %w", err)
 	}
@@ -205,7 +206,7 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 	resultMap, err := r.cache.HGetAll(ctx, fileMetadataKey)
 	if err == nil {
 		if _, ok := resultMap["__NOT_FOUND__"]; ok {
-			return nil, fmt.Errorf("file repository: %w", xerr.ErrEmptyCache) //  如果从缓存命中不存在标记，直接返回不存在错误
+			return nil, xerr.ErrFileNotFound //  如果从缓存命中不存在标记，直接返回不存在错误
 		}
 		file, err := mapper.MapToFile(resultMap) // 辅助函数将 map[string]string 映射到 models.File
 		if err == nil {
@@ -220,6 +221,12 @@ func (r *fileRepository) FindFileByMD5Hash(md5Hash string) (*models.File, error)
 	// 注意：这里我们可能需要查询的是那些非文件夹且状态正常的文件的 MD5Hash
 	err = r.db.Where("md5_hash = ? AND is_folder = 0 AND status = 1", md5Hash).First(&file).Error
 	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// 如果数据库中也不存在，缓存一个空值，防止缓存穿透
+			r.cache.HSet(ctx, fileMetadataKey, "__NOT_FOUND__", "1")
+			r.cache.Expire(ctx, fileMetadataKey, 1*time.Minute)
+			return nil, xerr.ErrFileNotFound // 文件未找到
+		}
 		log.Printf("Error finding file by MD5 hash %s: %v", md5Hash, err)
 		return nil, err
 	}
@@ -360,6 +367,19 @@ func (r *fileRepository) FindByOssKey(ossKey string) (*models.File, error) {
 	return &file, nil
 }
 
+// TODO 缓存逻辑
+func (r *fileRepository) FindByFileName(userID uint64, parentFolderID *uint64, fileName string) (*models.File, error) {
+	var file models.File
+	query := r.db.Where("user_id = ? AND file_name = ?", userID, fileName)
+	if parentFolderID == nil {
+		query = query.Where("parent_folder_id IS NULL")
+	} else {
+		query = query.Where("parent_folder_id = ?", *parentFolderID)
+	}
+	err := query.First(&file).Error
+	return &file, err
+}
+
 // 根据存储路径查找文件
 // 缓存失效逻辑非常复杂，维护成本高,暂时不考虑添加缓存逻辑
 func (r *fileRepository) FindByPath(path string) (*models.File, error) {
@@ -432,15 +452,29 @@ func (r *fileRepository) SoftDelete(fileID uint64) error {
 		return xerr.ErrFileNotFound
 	}
 
-	err = r.db.Model(file).
-		Where("id = ?", fileID).
-		Updates(map[string]any{
-			"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
-			"status":     0,          // 设置 status 字段为 0
-		}).Error
+	err = r.db.Transaction(func(tx *gorm.DB) error {
+		// 软删除所有文件版本记录
+		if err := tx.Model(&models.FileVersion{}).
+			Where("file_id = ?", fileID).
+			Updates(map[string]any{
+				"deleted_at": time.Now(),
+			}).Error; err != nil {
+			return fmt.Errorf("failed to soft delete versions: %w", err)
+		}
+		// 软删除文件
+		if err = tx.Model(file).
+			Where("id = ?", fileID).
+			Updates(map[string]any{
+				"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
+				"status":     0,          // 设置 status 字段为 0
+			}).Error; err != nil {
+			logger.Error("SoftDelete: Failed to soft delete file in DB", zap.Error(err), zap.Uint64("fileID", fileID))
+			return fmt.Errorf("failed to soft delete file: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		logger.Error("SoftDelete: Failed to soft delete file in DB", zap.Error(err), zap.Uint64("fileID", fileID))
-		return fmt.Errorf("failed to soft delete file: %w", err)
+		return err
 	}
 
 	ctx := context.Background()
@@ -493,8 +527,8 @@ func (r *fileRepository) SoftDelete(fileID uint64) error {
 }
 
 // 永久删除文件
-func (r *fileRepository) PermanentDelete(id uint64) error {
-	file, err := r.FindByID(id) // 获取文件信息以便删除相关缓存
+func (r *fileRepository) PermanentDelete(fileID uint64) error {
+	file, err := r.FindByID(fileID) // 获取文件信息以便删除相关缓存
 	if err != nil {
 		return err
 	}
@@ -502,16 +536,28 @@ func (r *fileRepository) PermanentDelete(id uint64) error {
 		return xerr.ErrFileNotFound
 	}
 
-	// 永久删除数据库记录
-	err = r.db.Unscoped().Delete(&models.File{}, id).Error // Unscoped() 绕过软删除
+	err = r.db.Transaction(func(tx *gorm.DB) error {
+		// 永久所有文件版本记录
+		if err := tx.Unscoped().Where("file_id = ?", fileID).Delete(&models.FileVersion{}).Error; err != nil {
+			return fmt.Errorf("failed to permanently delete versions: %w", err)
+		}
+
+		// 永久删除数据库记录
+		err = tx.Unscoped().Delete(&models.File{}, fileID).Error // Unscoped() 绕过软删除
+		if err != nil {
+			return fmt.Errorf("failed to permanently delete file: %w", err)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("永久删除文件失败: %w", err)
+		return err
 	}
 
 	ctx := context.Background()
 	pipe := r.cache.TxPipeline()
 	fileMetadataKey := cache.GenerateFileMetadataKey(file.ID)
 
+	//把file结构体映射到map类型
 	fileMap, err := mapper.FileToMap(file)
 	if err != nil {
 		logger.Error("FindByID: Failed to map models.File to hash for caching", zap.Uint64("id", file.ID), zap.Error(err))

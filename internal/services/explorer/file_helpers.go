@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
@@ -27,6 +25,7 @@ func (s *fileService) performSoftDelete(userID uint64, filesToDelete []models.Fi
 		}
 
 		// 执行软删除
+		// 删除版本号记录和对应文件记录
 		if err := s.fileRepo.SoftDelete(fileToDelete.ID); err != nil {
 			logger.Error("performSoftDelete: Failed to soft delete", zap.Uint64("fileID", fileToDelete.ID), zap.Error(err))
 			return fmt.Errorf("helper: failed to soft delete file %d: %w", fileToDelete.ID, xerr.ErrDatabaseError)
@@ -37,119 +36,6 @@ func (s *fileService) performSoftDelete(userID uint64, filesToDelete []models.Fi
 			zap.String("fileName", fileToDelete.FileName))
 	}
 
-	return nil
-}
-
-// performPermanentDelete 执行永久删除
-func (s *fileService) performPermanentDelete(filesToDelete []models.File, userID uint64) error {
-	// 对要删除的文件进行排序，确保先删除子项的物理文件，再删除父文件夹的物理文件
-	for i := len(filesToDelete) - 1; i >= 0; i-- {
-		fileToDelete := filesToDelete[i]
-
-		// 确保文件属于当前用户 (双重检查)
-		if fileToDelete.UserID != userID {
-			logger.Error("performPermanentDelete: Access denied", zap.Uint64("fileID", fileToDelete.ID), zap.Uint64("userID", userID))
-			return fmt.Errorf("helper: %w", xerr.ErrPermissionDenied)
-		}
-
-		// 删除物理文件（如果是文件且有物理存储）
-		if err := s.deletePhysicalFile(&fileToDelete); err != nil {
-			return err // 错误已在下层包裹
-		}
-
-		// 删除数据库记录
-		if err := s.fileRepo.PermanentDelete(fileToDelete.ID); err != nil {
-			logger.Error("performPermanentDelete: Failed to delete file record from DB",
-				zap.Uint64("fileID", fileToDelete.ID), zap.Error(err))
-			return fmt.Errorf("helper: failed to delete file record: %w", xerr.ErrDatabaseError)
-		}
-
-		logger.Info("File permanently deleted",
-			zap.Uint64("fileID", fileToDelete.ID),
-			zap.String("fileName", fileToDelete.FileName))
-	}
-
-	return nil
-}
-
-// deletePhysicalFile 删除物理文件
-func (s *fileService) deletePhysicalFile(file *models.File) error {
-	// 如果是文件且有 OssKey (即有对应的物理文件)，则删除物理文件
-	if file.IsFolder == 0 && file.OssKey != nil && *file.OssKey != "" && file.MD5Hash != nil && *file.MD5Hash != "" {
-		// 检查是否有其他文件引用这个物理文件
-		referencesCount, err := s.fileRepo.CountFilesInStorage(*file.OssKey, *file.MD5Hash, file.ID)
-		if err != nil {
-			logger.Error("deletePhysicalFile: Failed to check file references", zap.String("ossKey", *file.OssKey), zap.Error(err))
-			return fmt.Errorf("helper: failed to check file references: %w", xerr.ErrDatabaseError)
-		}
-
-		if referencesCount == 0 {
-			// 没有其他文件记录引用这个物理文件了，可以安全删除物理文件
-			logger.Info("No other references to physical file, proceeding with physical deletion.",
-				zap.String("ossKey", *file.OssKey),
-				zap.Uint64("fileID", file.ID))
-
-			switch s.cfg.Storage.Type {
-			case "local":
-				return s.deleteLocalFile(*file.OssKey)
-			case "minio":
-				return s.deleteMinioFile(file)
-			default:
-				logger.Error("deletePhysicalFile: Unsupported storage type", zap.String("type", s.cfg.Storage.Type))
-				return fmt.Errorf("helper: %w", xerr.ErrStorageError)
-			}
-		} else {
-			// 存在其他用户的文件引用,就不删除物理文件
-			logger.Info("Physical file has other references, skipping physical deletion.",
-				zap.String("ossKey", *file.OssKey),
-				zap.Uint64("fileID", file.ID),
-				zap.Int64("referencesCount", referencesCount))
-		}
-	}
-
-	return nil
-}
-
-// deleteLocalFile 删除本地文件
-func (s *fileService) deleteLocalFile(ossKey string) error {
-	localFilePath := filepath.Join(s.cfg.Storage.LocalBasePath, ossKey)
-	err := os.Remove(localFilePath)
-	if err != nil {
-		logger.Error("Failed to delete physical file",
-			zap.String("path", localFilePath), zap.Error(err))
-		return fmt.Errorf("helper: failed to delete physical file: %w", xerr.ErrStorageError)
-	}
-	logger.Info("Physical file deleted", zap.String("path", localFilePath))
-	return nil
-}
-
-// deleteMinioFile 删除MinIO文件
-func (s *fileService) deleteMinioFile(file *models.File) error {
-	bucketName := s.cfg.MinIO.BucketName
-	if file.OssBucket != nil && *file.OssBucket != "" {
-		bucketName = *file.OssBucket
-	}
-
-	logger.Info("Attempting to delete object from MinIO",
-		zap.String("bucket", bucketName),
-		zap.String("ossKey", *file.OssKey),
-		zap.Uint64("fileID", file.ID))
-
-	objectName := s.StorageService.GetUploadObjName(*file.MD5Hash, file.FileName)
-	err := s.StorageService.RemoveObject(context.Background(), bucketName, objectName)
-	if err != nil {
-		logger.Error("Failed to delete object from MinIO",
-			zap.String("bucket", bucketName),
-			zap.String("ossKey", *file.OssKey),
-			zap.Uint64("fileID", file.ID),
-			zap.Error(err))
-		return fmt.Errorf("helper: failed to delete object from cloud storage: %w", xerr.ErrStorageError)
-	}
-
-	logger.Info("Object deleted from MinIO",
-		zap.String("bucket", bucketName),
-		zap.String("ossKey", *file.OssKey),
-		zap.Uint64("fileID", file.ID))
 	return nil
 }
 

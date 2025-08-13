@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
@@ -56,7 +57,7 @@ type ShareCheckPasswordRequest struct {
 func (h *ShareHandler) CreateShare(c *gin.Context) {
 	var req CreateShareRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "请求参数解析失败: "+err.Error())
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "请求参数解析失败: "+err.Error())
 		return
 	}
 
@@ -68,22 +69,22 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 	share, err := h.shareService.CreateShare(c.Request.Context(), userID, req.FileID, req.Password, req.ExpiresInMinutes)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else if errors.Is(err, xerr.ErrFileStatusInvalid) {
-			xerr.Error(c, http.StatusBadRequest, xerr.FileStatusInvalidCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.FileStatusInvalidCode, err.Error())
 		} else if errors.Is(err, xerr.ErrShareAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.ShareAlreadyExistsCode, err.Error())
+			response.Error(c, http.StatusConflict, xerr.ShareAlreadyExistsCode, err.Error())
 		} else {
 			logger.Error("CreateShare: 创建分享链接失败", zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "创建分享链接失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "创建分享链接失败")
 		}
 		return
 	}
 
 	shareURL := fmt.Sprintf("%s/share/%s", h.cfg.Storage.LocalBasePath, share.UUID)
-	xerr.Success(c, http.StatusOK, "分享链接创建成功", gin.H{
+	response.Success(c, http.StatusOK, "分享链接创建成功", gin.H{
 		"share":     share,
 		"share_url": shareURL,
 	})
@@ -102,7 +103,7 @@ func (h *ShareHandler) CreateShare(c *gin.Context) {
 func (h *ShareHandler) GetShareDetails(c *gin.Context) {
 	shareUUID := c.Param("share_uuid")
 	if shareUUID == "" {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享UUID不能为空")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享UUID不能为空")
 		return
 	}
 	password := c.Query("password")
@@ -114,18 +115,18 @@ func (h *ShareHandler) GetShareDetails(c *gin.Context) {
 	share, err := h.shareService.GetShareByUUID(c.Request.Context(), shareUUID, providedPassword)
 	if err != nil {
 		if errors.Is(err, xerr.ErrShareNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrSharePasswordRequired) {
-			xerr.Error(c, http.StatusForbidden, xerr.SharePasswordRequiredCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.SharePasswordRequiredCode, err.Error())
 		} else {
 			logger.Error("GetShareDetails: 获取分享详情失败", zap.String("uuid", shareUUID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享详情失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享详情失败")
 		}
 		return
 	}
 
 	share.Password = nil
-	xerr.Success(c, http.StatusOK, "获取链接详情成功", gin.H{
+	response.Success(c, http.StatusOK, "获取链接详情成功", gin.H{
 		"share": share,
 	})
 }
@@ -145,29 +146,29 @@ func (h *ShareHandler) GetShareDetails(c *gin.Context) {
 func (h *ShareHandler) VerifySharePassword(c *gin.Context) {
 	shareUUID := c.Param("share_uuid")
 	if shareUUID == "" {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享UUID不能为空")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享UUID不能为空")
 		return
 	}
 
 	var req ShareCheckPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "请求参数解析失败: "+err.Error())
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "请求参数解析失败: "+err.Error())
 		return
 	}
 
 	_, err := h.shareService.GetShareByUUID(c.Request.Context(), shareUUID, req.Password)
 	if err != nil {
 		if errors.Is(err, xerr.ErrShareNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrSharePasswordIncorrect) {
-			xerr.Error(c, http.StatusForbidden, xerr.SharePasswordIncorrectCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.SharePasswordIncorrectCode, err.Error())
 		} else {
 			logger.Error("VerifySharePassword: 验证分享密码失败", zap.String("uuid", shareUUID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "验证分享密码失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "验证分享密码失败")
 		}
 		return
 	}
-	xerr.Success(c, http.StatusOK, "密码验证成功", nil)
+	response.Success(c, http.StatusOK, "密码验证成功", nil)
 }
 
 // DownloadSharedContent handles downloading the content of a shared file/folder.
@@ -184,7 +185,7 @@ func (h *ShareHandler) VerifySharePassword(c *gin.Context) {
 func (h *ShareHandler) DownloadSharedContent(c *gin.Context) {
 	shareUUID := c.Param("share_uuid")
 	if shareUUID == "" {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享UUID不能为空")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享UUID不能为空")
 		return
 	}
 
@@ -197,14 +198,14 @@ func (h *ShareHandler) DownloadSharedContent(c *gin.Context) {
 	share, err := h.shareService.GetShareByUUID(c.Request.Context(), shareUUID, providedPassword)
 	if err != nil {
 		if errors.Is(err, xerr.ErrShareNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrSharePasswordRequired) {
-			xerr.Error(c, http.StatusForbidden, xerr.SharePasswordRequiredCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.SharePasswordRequiredCode, err.Error())
 		} else if errors.Is(err, xerr.ErrSharePasswordIncorrect) {
-			xerr.Error(c, http.StatusForbidden, xerr.SharePasswordIncorrectCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.SharePasswordIncorrectCode, err.Error())
 		} else {
 			logger.Error("DownloadSharedContent: 验证分享链接失败", zap.String("uuid", shareUUID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "下载分享内容失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "下载分享内容失败")
 		}
 		return
 	}
@@ -218,7 +219,7 @@ func (h *ShareHandler) DownloadSharedContent(c *gin.Context) {
 		reader, err = h.shareService.GetSharedFileContent(c.Request.Context(), share)
 		if err != nil {
 			logger.Error("DownloadSharedContent: 获取分享文件内容失败", zap.String("uuid", shareUUID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享文件内容失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享文件内容失败")
 			return
 		}
 		fileName = share.File.FileName
@@ -228,7 +229,7 @@ func (h *ShareHandler) DownloadSharedContent(c *gin.Context) {
 		reader, err = h.shareService.GetSharedFolderContent(c.Request.Context(), share)
 		if err != nil {
 			logger.Error("DownloadSharedContent: 打包分享文件夹内容失败", zap.String("uuid", shareUUID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "打包分享文件夹内容失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "打包分享文件夹内容失败")
 			return
 		}
 		fileName = fmt.Sprintf("%s.zip", share.File.FileName)
@@ -282,10 +283,10 @@ func (h *ShareHandler) ListUserShares(c *gin.Context) {
 	shares, total, err := h.shareService.ListUserShares(userID, page, pageSize)
 	if err != nil {
 		logger.Error("ListUserShares: 获取用户分享列表失败", zap.Uint64("userID", userID), zap.Error(err))
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享列表失败")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享列表失败")
 		return
 	}
-	xerr.Success(c, http.StatusOK, "成功获取所有有效分享链接", gin.H{
+	response.Success(c, http.StatusOK, "成功获取所有有效分享链接", gin.H{
 		"shares": shares,
 		"total":  total,
 	})
@@ -305,7 +306,7 @@ func (h *ShareHandler) RevokeShare(c *gin.Context) {
 	shareIDStr := c.Param("share_id")
 	shareID, err := strconv.ParseUint(shareIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享ID格式无效")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "分享ID格式无效")
 		return
 	}
 
@@ -317,12 +318,12 @@ func (h *ShareHandler) RevokeShare(c *gin.Context) {
 	err = h.shareService.RevokeShare(userID, shareID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrShareNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.ShareNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else {
 			logger.Error("RevokeShare: 撤销分享链接失败", zap.Uint64("shareID", shareID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "撤销分享链接失败")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "撤销分享链接失败")
 		}
 		return
 	}

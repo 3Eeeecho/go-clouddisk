@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
@@ -48,20 +49,20 @@ func (h *FileHandler) GetSpecificFile(c *gin.Context) {
 	fileIDStr := c.Param("file_id")
 	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
 		return
 	}
 
 	files, err := h.fileService.GetFileByID(currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to get file info")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to get file info")
 		return
 	}
-	xerr.Success(c, http.StatusOK, "File info retrieved successfully", files)
+	response.Success(c, http.StatusOK, "File info retrieved successfully", files)
 }
 
 // @Summary 获取用户文件列表
@@ -85,7 +86,7 @@ func (h *FileHandler) ListUserFiles(c *gin.Context) {
 	if parentFolderIDStr != "" {
 		parsedID, err := strconv.ParseUint(parentFolderIDStr, 10, 64)
 		if err != nil {
-			xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid parent_folder_id")
+			response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid parent_folder_id")
 			return
 		}
 		parentFolderID = &parsedID
@@ -94,14 +95,14 @@ func (h *FileHandler) ListUserFiles(c *gin.Context) {
 	files, err := h.fileService.GetFilesByUserID(currentUserID, parentFolderID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrDirectoryNotFound) {
-			xerr.Error(c, http.StatusBadRequest, xerr.DirectoryNotFoundCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.DirectoryNotFoundCode, err.Error())
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list files")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list files")
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "Files listed successfully", files)
+	response.Success(c, http.StatusOK, "Files listed successfully", files)
 }
 
 type CreateFolderRequest struct {
@@ -127,25 +128,25 @@ func (h *FileHandler) CreateFolder(c *gin.Context) {
 
 	var req CreateFolderRequest
 	if err := c.ShouldBindBodyWithJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request payload")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request payload")
 		return
 	}
 
 	folder, err := h.fileService.CreateFolder(currentUserID, req.FolderName, req.ParentFolderID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrDirectoryNotFound) {
-			xerr.Error(c, http.StatusBadRequest, xerr.DirectoryNotFoundCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.DirectoryNotFoundCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrFileAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
+			response.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to create folder")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to create folder")
 		return
 	}
 
-	xerr.Success(c, http.StatusCreated, "Folder created successfully", gin.H{
+	response.Success(c, http.StatusCreated, "Folder created successfully", gin.H{
 		"id":               folder.ID,
 		"uuid":             folder.UUID,
 		"folder_name":      folder.FileName,
@@ -169,7 +170,7 @@ func (h *FileHandler) DownloadFile(c *gin.Context) {
 	fileIDStr := c.Param("file_id")
 	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
 		return
 	}
 
@@ -181,14 +182,14 @@ func (h *FileHandler) DownloadFile(c *gin.Context) {
 	file, reader, err := h.fileService.Download(c.Request.Context(), currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else if errors.Is(err, xerr.ErrCannotDownloadFolder) {
-			xerr.Error(c, http.StatusBadRequest, xerr.CannotDownloadFolderCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.CannotDownloadFolderCode, err.Error())
 		} else {
 			logger.Error("DownloadFile: Failed to download file", zap.Uint64("fileID", fileID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to download file")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to download file")
 		}
 		return
 	}
@@ -227,21 +228,21 @@ func (h *FileHandler) DownloadFolder(c *gin.Context) {
 	folderIDStr := c.Param("id")
 	folderID, err := strconv.ParseUint(folderIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "invalid folder ID")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "invalid folder ID")
 		return
 	}
 
 	folder, zipReader, err := h.fileService.Download(context.Background(), currentUserID, folderID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else if errors.Is(err, xerr.ErrTargetNotFolder) {
-			xerr.Error(c, http.StatusBadRequest, xerr.TargetNotFolderCode, "Cannot download a file using folder download endpoint")
+			response.Error(c, http.StatusBadRequest, xerr.TargetNotFolderCode, "Cannot download a file using folder download endpoint")
 		} else {
 			logger.Error("DownloadFolder: Failed to get folder for download", zap.Uint64("folderID", folderID), zap.Uint64("userID", currentUserID), zap.Error(err))
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "failed to prepare folder for download")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "failed to prepare folder for download")
 		}
 		return
 	}
@@ -270,7 +271,7 @@ func (h *FileHandler) SoftDeleteFile(c *gin.Context) {
 	fileIDStr := c.Param("file_id")
 	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
 		return
 	}
 
@@ -282,17 +283,17 @@ func (h *FileHandler) SoftDeleteFile(c *gin.Context) {
 	err = h.fileService.SoftDelete(currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to delete file")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to delete file")
 		return
 	}
-	xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d soft-deleted successfully", fileID), nil)
+	response.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d soft-deleted successfully", fileID), nil)
 }
 
 // @Summary 彻底删除文件或文件夹（永久删除）
@@ -312,29 +313,29 @@ func (h *FileHandler) PermanentDeleteFile(c *gin.Context) {
 	fileIDStr := c.Param("file_id")
 	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
 		return
 	}
 
 	err = h.fileService.PermanentDelete(currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrDirNotEmpty) {
-			xerr.Error(c, http.StatusBadRequest, xerr.DirNotEmptyCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.DirNotEmptyCode, err.Error())
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to permanently delete file")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to permanently delete file")
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d permanently deleted successfully", fileID), nil)
+	response.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d permanently deleted successfully", fileID), nil)
 }
 
 // @Summary 列出回收站中的文件
@@ -352,11 +353,11 @@ func (h *FileHandler) ListRecycleBinFiles(c *gin.Context) {
 
 	files, err := h.fileService.ListRecycleBinFiles(currentUserID)
 	if err != nil {
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list recycle bin files")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list recycle bin files")
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "Recycle bin files listed successfully", files)
+	response.Success(c, http.StatusOK, "Recycle bin files listed successfully", files)
 }
 
 // @Summary 恢复文件/文件夹
@@ -378,29 +379,29 @@ func (h *FileHandler) RestoreFile(c *gin.Context) {
 	fileIDStr := c.Param("file_id")
 	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
 		return
 	}
 
 	err = h.fileService.RestoreFile(currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotInRecycleBin) {
-			xerr.Error(c, http.StatusBadRequest, xerr.FileNotInRecycleBinCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.FileNotInRecycleBinCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 			return
 		}
 		if errors.Is(err, xerr.ErrFileAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
+			response.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
 			return
 		}
-		xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to restore file")
+		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to restore file")
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d restored successfully", fileID), nil)
+	response.Success(c, http.StatusOK, fmt.Sprintf("File/Folder %d restored successfully", fileID), nil)
 }
 
 // 定义 RenameFileRequest 结构体
@@ -425,7 +426,7 @@ func (h *FileHandler) RenameFile(c *gin.Context) {
 	fileIDStr := c.Param("id")
 	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
 	if err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID")
 		return
 	}
 
@@ -436,27 +437,27 @@ func (h *FileHandler) RenameFile(c *gin.Context) {
 
 	var req RenameFileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body: "+err.Error())
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body: "+err.Error())
 		return
 	}
 
 	renamedFile, err := h.fileService.RenameFile(currentUserID, fileID, req.NewFileName)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else if errors.Is(err, xerr.ErrFileStatusInvalid) {
-			xerr.Error(c, http.StatusBadRequest, xerr.FileStatusInvalidCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.FileStatusInvalidCode, err.Error())
 		} else if errors.Is(err, xerr.ErrFileAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
+			response.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, err.Error())
 		} else {
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to rename file")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to rename file")
 		}
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "File/folder renamed successfully", gin.H{
+	response.Success(c, http.StatusOK, "File/folder renamed successfully", gin.H{
 		"file_info": renamedFile,
 	})
 }
@@ -483,7 +484,7 @@ type MoveFileRequest struct {
 func (h *FileHandler) MoveFile(c *gin.Context) {
 	var req MoveFileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		xerr.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body format")
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body format")
 		return
 	}
 
@@ -495,26 +496,71 @@ func (h *FileHandler) MoveFile(c *gin.Context) {
 	movedFile, err := h.fileService.MoveFile(currentUserID, req.FileID, req.TargetParentFolderID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, "File or folder to move not found")
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, "File or folder to move not found")
 		} else if errors.Is(err, xerr.ErrDirectoryNotFound) {
-			xerr.Error(c, http.StatusNotFound, xerr.DirectoryNotFoundCode, "Target parent folder not found")
+			response.Error(c, http.StatusNotFound, xerr.DirectoryNotFoundCode, "Target parent folder not found")
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
-			xerr.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else if errors.Is(err, xerr.ErrCannotMoveRoot) {
-			xerr.Error(c, http.StatusBadRequest, xerr.CannotMoveRootCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.CannotMoveRootCode, err.Error())
 		} else if errors.Is(err, xerr.ErrCannotMoveIntoSubtree) {
-			xerr.Error(c, http.StatusBadRequest, xerr.CannotMoveIntoSubtreeCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.CannotMoveIntoSubtreeCode, err.Error())
 		} else if errors.Is(err, xerr.ErrTargetNotFolder) {
-			xerr.Error(c, http.StatusBadRequest, xerr.TargetNotFolderCode, err.Error())
+			response.Error(c, http.StatusBadRequest, xerr.TargetNotFolderCode, err.Error())
 		} else if errors.Is(err, xerr.ErrFileAlreadyExists) {
-			xerr.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, "Name conflict in target location")
+			response.Error(c, http.StatusConflict, xerr.FileAlreadyExistsCode, "Name conflict in target location")
 		} else {
-			xerr.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to move file/folder")
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to move file/folder")
 		}
 		return
 	}
 
-	xerr.Success(c, http.StatusOK, "File/folder moved successfully", gin.H{
+	response.Success(c, http.StatusOK, "File/folder moved successfully", gin.H{
 		"file_info": movedFile,
 	})
+}
+
+// @Summary 删除文件版本
+// @Description 删除指定文件的指定版本
+// @Tags 文件
+// @Security BearerAuth
+// @Param file_id path int true "文件ID"
+// @Param version_id path int true "版本ID"
+// @Success 200 {object} xerr.Response "删除成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Router /api/v1/files/{file_id}/versions/{version_id} [delete]
+func (h *FileHandler) DeleteFileVersion(c *gin.Context) {
+	currentUserID, ok := utils.GetUserIDFromContext(c)
+	if !ok {
+		return
+	}
+
+	fileIDStr := c.Param("file_id")
+	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		return
+	}
+
+	versionIDStr := c.Param("version_id")
+	versionID, err := strconv.ParseUint(versionIDStr, 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid version ID format")
+		return
+	}
+
+	err = h.fileService.DeleteFileVersion(currentUserID, fileID, versionID)
+	if err != nil {
+		if errors.Is(err, xerr.ErrFileNotFound) {
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+		} else if errors.Is(err, xerr.ErrPermissionDenied) {
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+		} else {
+			logger.Error("DeleteFileVersion: Failed to delete file version", zap.Uint64("fileID", fileID), zap.Uint64("versionID", versionID), zap.Error(err))
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to delete file version")
+		}
+		return
+	}
+
+	response.Success(c, http.StatusOK, "File version deleted successfully", nil)
 }

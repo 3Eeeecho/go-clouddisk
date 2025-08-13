@@ -14,8 +14,10 @@ type StorageService interface {
 	PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, contentType string) (PutObjectResult, error)
 	// 从指定存储桶下载文件，返回一个读取器和对象信息
 	GetObject(ctx context.Context, bucketName, objectName string) (GetObjectResult, error)
-	// 从指定存储桶删除文件
-	RemoveObject(ctx context.Context, bucketName, objectName string) error
+	// 从指定存储桶删除指定版本文件
+	RemoveObject(ctx context.Context, bucketName, objectName, VersionID string) error
+	// 从指定存储桶删除所有版本文件
+	RemoveObjects(ctx context.Context, bucketName, objectName string) error
 	// 检查存储桶是否存在
 	IsBucketExist(ctx context.Context, bucketName string) (bool, error)
 	// 创建存储桶
@@ -37,15 +39,22 @@ type StorageService interface {
 	// AbortMultiPartUpload 中止分块上传
 	AbortMultiPartUpload(ctx context.Context, bucketName, objectName, uploadID string) error
 
+	// ListObjectParts 列出已上传的分块
+	ListObjectParts(ctx context.Context, bucketName, objectName, uploadID string) ([]UploadPartResult, error)
+
 	//获取上传的ObjectName
 	GetUploadObjName(fileHash, fileName string) string
+
+	// IsUploadIDNotFound 检查错误是否是 "upload ID not found" 类型
+	IsUploadIDNotFound(err error) bool
 }
 
 type PutObjectResult struct {
-	Bucket string
-	Key    string
-	Size   int64
-	ETag   string // 对象哈希值
+	Bucket    string
+	Key       string
+	Size      int64
+	ETag      string // 对象哈希值
+	VersionID string // 版本 ID
 }
 
 type PutObjectOptions struct {

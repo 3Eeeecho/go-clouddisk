@@ -43,6 +43,7 @@ func AutoMigrate(db *gorm.DB) {
 		&models.User{},
 		&models.File{},
 		&models.Share{},
+		&models.FileVersion{},
 	)
 	if err != nil {
 		logger.Fatal("Failed to auto migrate database tables", zap.Error(err))

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/utils"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/gin-gonic/gin"
@@ -17,14 +18,14 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 		// 1. 从请求头获取 Token
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Authorization header is required")
+			response.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Authorization header is required")
 			return
 		}
 
 		// Token 格式通常是 "Bearer <token>"
 		parts := strings.Split(authHeader, " ")
 		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid Authorization header format")
+			response.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid Authorization header format")
 			return
 		}
 		tokenString := parts[1]
@@ -39,12 +40,12 @@ func AuthMiddleware(cfg *config.Config) gin.HandlerFunc {
 		})
 
 		if err != nil {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid or malformed token: "+err.Error()) // 统一返回错误
+			response.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid or malformed token: "+err.Error()) // 统一返回错误
 			return
 		}
 
 		if !token.Valid {
-			xerr.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid token")
+			response.AbortWithError(c, http.StatusUnauthorized, xerr.UnauthorizedCode, "Invalid token")
 			return
 		}
 

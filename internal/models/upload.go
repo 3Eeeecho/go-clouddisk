@@ -34,9 +34,13 @@ type UploadCompleteRequest struct {
 // ListPartsRequest 定义了查询已上传分块的请求体
 type ListPartsRequest struct {
 	UploadID string `json:"upload_id" binding:"required"`
+	FileHash string `json:"file_hash" binding:"required"`
+	FileName string `json:"file_name" binding:"required"`
 }
 
 // ListPartsResponse 定义了查询已上传分块的响应体
 type ListPartsResponse struct {
-	UploadedParts []int `json:"uploaded_parts"`
+	UploadedParts  []int  `json:"uploaded_parts"`
+	NewUploadID    string `json:"new_upload_id,omitempty"`
+	SessionExpired bool   `json:"session_expired"`
 }

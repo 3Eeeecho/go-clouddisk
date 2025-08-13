@@ -14,6 +14,8 @@ import (
 	"go.uber.org/zap"
 )
 
+//TODO 待完善文件,后续考虑完善
+
 type AliyunOSSStorageService struct {
 	client *oss.Client
 	cfg    *config.AliyunOSSConfig // 阿里云OSS的配置信息
@@ -98,7 +100,7 @@ func (s *AliyunOSSStorageService) GetObject(ctx context.Context, bucketName, obj
 }
 
 // RemoveObject 实现 StorageService 接口的 RemoveObject 方法
-func (s *AliyunOSSStorageService) RemoveObject(ctx context.Context, bucketName, objectName string) error {
+func (s *AliyunOSSStorageService) RemoveObject(ctx context.Context, bucketName, objectName, VersionID string) error {
 	bucket, err := s.client.Bucket(bucketName)
 	if err != nil {
 		return fmt.Errorf("获取OSS存储桶失败: %w", err)
@@ -107,6 +109,12 @@ func (s *AliyunOSSStorageService) RemoveObject(ctx context.Context, bucketName, 
 	if err != nil {
 		return fmt.Errorf("阿里云OSS删除文件失败: %w", err)
 	}
+	return nil
+}
+
+// 从指定存储桶删除所有版本文件
+func (s *AliyunOSSStorageService) RemoveObjects(ctx context.Context, bucketName, objectName string) error {
+
 	return nil
 }
 
@@ -189,5 +197,20 @@ func (s *AliyunOSSStorageService) AbortMultiPartUpload(ctx context.Context, buck
 }
 
 func (s *AliyunOSSStorageService) GetUploadObjName(fileHash, fileName string) string {
-	return ""
+	return fmt.Sprintf("uploads/%s", fileName)
+}
+
+func (s *AliyunOSSStorageService) ListObjectParts(ctx context.Context, bucketName, objectName, uploadID string) ([]UploadPartResult, error) {
+	return nil, nil
+}
+
+func (s *AliyunOSSStorageService) IsUploadIDNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Aliyun OSS a "NoSuchUpload" error code when the upload ID does not exist.
+	if ossErr, ok := err.(oss.ServiceError); ok && ossErr.Code == "NoSuchUpload" {
+		return true
+	}
+	return false
 }

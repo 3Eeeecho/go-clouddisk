@@ -6,8 +6,8 @@ import (
 	_ "github.com/3Eeeecho/go-clouddisk/docs"
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
+	"github.com/3Eeeecho/go-clouddisk/internal/handlers/response"
 	"github.com/3Eeeecho/go-clouddisk/internal/middlewares"
-	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/gin-gonic/gin"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -72,6 +72,7 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			fileGroup.PUT("/restore/:file_id", fileHandler.RestoreFile)
 			fileGroup.PUT("/rename/:id", fileHandler.RenameFile)
 			fileGroup.PUT("/move", fileHandler.MoveFile)
+			fileGroup.DELETE("/:file_id/versions/:version_id", fileHandler.DeleteFileVersion)
 		}
 
 		// 分享相关路由
@@ -98,7 +99,7 @@ func InitRouter(authHandler *handlers.AuthHandler,
 	}
 
 	router.NoRoute(func(c *gin.Context) {
-		xerr.Error(c, http.StatusNotFound, http.StatusNotFound, "Route not found")
+		response.Error(c, http.StatusNotFound, http.StatusNotFound, "Route not found")
 	})
 
 	return router

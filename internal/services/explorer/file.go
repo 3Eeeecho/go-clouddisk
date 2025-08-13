@@ -40,6 +40,7 @@ type FileService interface {
 	// 文件删除
 	SoftDelete(userID uint64, fileID uint64) error
 	PermanentDelete(userID uint64, fileID uint64) error
+	DeleteFileVersion(userID uint64, fileID uint64, versionID uint64) error
 
 	// 回收站操作
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
@@ -48,10 +49,13 @@ type FileService interface {
 	// 文件操作
 	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error)
 	MoveFile(userID uint64, fileID uint64, parentFolderID *uint64) (*models.File, error)
+	ListFileVersions(userID uint64, fileID uint64) ([]models.FileVersion, error)
+	RestoreFileVersion(userID uint64, fileID uint64, versionID uint64) error
 }
 
 type fileService struct {
 	fileRepo           repositories.FileRepository
+	fileVersionRepo    repositories.FileVersionRepository
 	domainService      FileDomainService  // 业务逻辑
 	transactionManager TransactionManager // 事务管理
 	StorageService     storage.StorageService
@@ -64,6 +68,7 @@ var _ FileService = (*fileService)(nil)
 // NewFileService 创建一个新的文件服务实例
 func NewFileService(
 	fileRepo repositories.FileRepository,
+	fileVersionRepo repositories.FileVersionRepository,
 	domainService FileDomainService,
 	transactionManager TransactionManager,
 	storageService storage.StorageService,
@@ -72,6 +77,7 @@ func NewFileService(
 ) FileService {
 	return &fileService{
 		fileRepo:           fileRepo,
+		fileVersionRepo:    fileVersionRepo,
 		domainService:      domainService,
 		transactionManager: transactionManager,
 		StorageService:     storageService,
@@ -360,6 +366,7 @@ func (s *fileService) Download(ctx context.Context, userID uint64, fileID uint64
 
 // 文件删除
 func (s *fileService) SoftDelete(userID uint64, fileID uint64) error {
+	//TODO 添加fileversion相关的删除逻辑
 	// 验证文件
 	_, err := s.domainService.CheckFile(userID, fileID)
 	if err != nil {
@@ -425,4 +432,104 @@ func (s *fileService) PermanentDelete(userID uint64, fileID uint64) error {
 		logger.Info("PermanentDeleteFile: Successfully marked file for deletion and published task", zap.Uint64("fileID", fileID))
 		return nil
 	})
+}
+
+func (s *fileService) DeleteFileVersion(userID uint64, fileID uint64, versionID uint64) error {
+	// 1. 验证用户是否有权访问该文件
+	file, err := s.domainService.CheckFile(userID, fileID)
+	if err != nil {
+		return err
+	}
+
+	// 2. 查找指定的版本
+	versionToDelete, err := s.fileVersionRepo.FindByID(versionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("file service: %w", xerr.ErrFileNotFound)
+		}
+		return fmt.Errorf("file service: failed to find file version: %w", xerr.ErrDatabaseError)
+	}
+
+	// 3. 确保版本属于正确的文件
+	if versionToDelete.FileID != file.ID {
+		return fmt.Errorf("file service: %w", xerr.ErrPermissionDenied)
+	}
+
+	// 4. 发送删除任务到 RabbitMQ
+	task := models.DeleteFileTask{
+		FileID:    file.ID,
+		UserID:    file.UserID,
+		OssKey:    versionToDelete.OssKey,
+		VersionID: versionToDelete.VersionID,
+	}
+	taskBody, _ := json.Marshal(task)
+
+	if err := s.mqClient.Publish("file_delete_queue", taskBody); err != nil {
+		logger.Error("DeleteFileVersion: Failed to publish delete task to RabbitMQ", zap.Uint64("fileID", fileID), zap.Error(err))
+		return fmt.Errorf("file service: failed to publish delete task: %w", xerr.ErrMQError)
+	}
+
+	// 5. 从数据库中删除版本记录
+	if err := s.fileVersionRepo.Delete(versionID); err != nil {
+		logger.Error("DeleteFileVersion: Failed to delete file version from DB", zap.Uint64("versionID", versionID), zap.Error(err))
+		return fmt.Errorf("file service: failed to delete file version: %w", xerr.ErrDatabaseError)
+	}
+
+	logger.Info("DeleteFileVersion: Successfully deleted file version", zap.Uint64("fileID", fileID), zap.Uint64("versionID", versionID))
+	return nil
+}
+
+func (s *fileService) ListFileVersions(userID uint64, fileID uint64) ([]models.FileVersion, error) {
+	// 1. 验证用户是否有权访问该文件
+	if _, err := s.domainService.CheckFile(userID, fileID); err != nil {
+		return nil, err
+	}
+
+	// 2. 查询版本历史
+	versions, err := s.fileVersionRepo.FindByFileID(fileID)
+	if err != nil {
+		logger.Error("ListFileVersions: Failed to get file versions", zap.Uint64("fileID", fileID), zap.Error(err))
+		return nil, fmt.Errorf("file service: failed to get file versions: %w", xerr.ErrDatabaseError)
+	}
+
+	logger.Info("ListFileVersions: Successfully retrieved file versions", zap.Uint64("fileID", fileID), zap.Int("versionCount", len(versions)))
+	return versions, nil
+}
+
+func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID uint64) error {
+	// 1. 验证用户是否有权访问该文件
+	file, err := s.domainService.CheckFile(userID, fileID)
+	if err != nil {
+		return err
+	}
+
+	// 2. 查找指定的版本
+	versionToRestore, err := s.fileVersionRepo.FindByID(versionID)
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("file service: %w", xerr.ErrFileNotFound)
+		}
+		return fmt.Errorf("file service: failed to find file version: %w", xerr.ErrDatabaseError)
+	}
+
+	// 3. 确保版本属于正确的文件
+	if versionToRestore.FileID != file.ID {
+		return fmt.Errorf("file service: %w", xerr.ErrPermissionDenied)
+	}
+
+	// 4. 更新主文件记录
+	file.Size = versionToRestore.Size
+	file.OssKey = &versionToRestore.OssKey
+	//TODO  注意：MD5Hash 可能需要重新计算或从版本记录中获取
+	// 这里我们假设版本记录中也存储了 MD5Hash
+	// file.MD5Hash = &versionToRestore.MD5Hash
+
+	if err := s.fileRepo.Update(file); err != nil {
+		logger.Error("RestoreFileVersion: Failed to update file record", zap.Uint64("fileID", fileID), zap.Error(err))
+		return fmt.Errorf("file service: failed to update file record: %w", xerr.ErrDatabaseError)
+	}
+
+	logger.Info("RestoreFileVersion: Successfully restored file version", zap.Uint64("fileID", fileID), zap.Uint64("versionID", versionID))
+	return nil
+
 }
