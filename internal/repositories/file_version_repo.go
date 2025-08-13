@@ -18,6 +18,7 @@ type FileVersionRepository interface {
 	Delete(id uint64) error
 	DeleteFile(fileID uint64) error
 	DeleteVersion(fileID uint64, versionID string) error
+	SoftDeleteByFileID(fileID uint64) error
 }
 
 type fileVersionRepository struct {
@@ -77,4 +78,8 @@ func (r *fileVersionRepository) DeleteFile(fileID uint64) error {
 
 func (r *fileVersionRepository) DeleteVersion(fileID uint64, versionID string) error {
 	return r.db.Where("file_id = ? AND version_id = ?", fileID, versionID).Delete(&models.FileVersion{}).Error
+}
+
+func (r *fileVersionRepository) SoftDeleteByFileID(fileID uint64) error {
+	return r.db.Where("file_id = ?", fileID).Delete(&models.FileVersion{}).Error
 }

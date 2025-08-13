@@ -75,6 +75,7 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			//fileVersion
 			fileGroup.DELETE("/:file_id/versions/:version_id", fileHandler.DeleteFileVersion)
 			fileGroup.GET("/versions/:file_id", fileHandler.ListFileVersions)
+			fileGroup.POST("/:file_id/versions/:version_id/restore", fileHandler.RestoreFileVersion)
 		}
 
 		// 分享相关路由

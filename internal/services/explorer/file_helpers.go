@@ -24,8 +24,15 @@ func (s *fileService) performSoftDelete(userID uint64, filesToDelete []models.Fi
 			return fmt.Errorf("helper: %w", xerr.ErrPermissionDenied)
 		}
 
+		// 如果是文件，则软删除其所有版本
+		if fileToDelete.IsFolder == 0 {
+			if err := s.fileVersionRepo.SoftDeleteByFileID(fileToDelete.ID); err != nil {
+				logger.Error("performSoftDelete: Failed to soft delete file versions", zap.Uint64("fileID", fileToDelete.ID), zap.Error(err))
+				return fmt.Errorf("helper: failed to soft delete file versions for file %d: %w", fileToDelete.ID, xerr.ErrDatabaseError)
+			}
+		}
+
 		// 执行软删除
-		// 删除版本号记录和对应文件记录
 		if err := s.fileRepo.SoftDelete(fileToDelete.ID); err != nil {
 			logger.Error("performSoftDelete: Failed to soft delete", zap.Uint64("fileID", fileToDelete.ID), zap.Error(err))
 			return fmt.Errorf("helper: failed to soft delete file %d: %w", fileToDelete.ID, xerr.ErrDatabaseError)
@@ -52,7 +59,7 @@ func (s *fileService) downloadFile(ctx context.Context, file *models.File) (*mod
 	if err != nil {
 		return nil, nil, err // 错误已在下层包裹
 	}
-
+	logger.Info("downloadFile", zap.String("versionID", *file.VersionID))
 	return file, fileContentReader, nil // 返回文件元数据和读取器
 }
 
@@ -193,7 +200,12 @@ func (s *fileService) GetFileContentReader(ctx context.Context, file *models.Fil
 		zap.String("ossKey", *file.OssKey))
 
 	// 调用抽象的 StorageService 接口
-	objResult, err := s.StorageService.GetObject(ctx, bucketName, *file.OssKey)
+	var versionID string
+	if file.VersionID != nil {
+		versionID = *file.VersionID
+	}
+	logger.Info("GetFileContentReader", zap.String("versionID", versionID))
+	objResult, err := s.StorageService.GetObject(ctx, bucketName, *file.OssKey, versionID)
 	if err != nil {
 		logger.Error("GetFileContentReader: Failed to get object from cloud storage",
 			zap.String("storageType", storageType),

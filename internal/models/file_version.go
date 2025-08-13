@@ -14,6 +14,7 @@ type FileVersion struct {
 	Size      uint64         `gorm:"not null" json:"size"`
 	OssKey    string         `gorm:"type:varchar(255);not null" json:"oss_key"`
 	VersionID string         `gorm:"type:varchar(128);not null" json:"version_id"` // MinIO 返回的版本 ID
+	MD5Hash   string         `gorm:"type:varchar(32);not null" json:"md5_hash"`
 	CreatedAt time.Time      `gorm:"autoCreateTime" json:"created_at"`
 	DeletedAt gorm.DeletedAt `gorm:"index" json:"deleted_at,omitempty"`
 

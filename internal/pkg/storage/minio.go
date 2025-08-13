@@ -86,8 +86,14 @@ func (s *MinIOStorageService) PutObject(ctx context.Context, bucketName, objectN
 	}, nil
 }
 
-func (s *MinIOStorageService) GetObject(ctx context.Context, bucketName, objectName string) (GetObjectResult, error) {
-	obj, err := s.client.GetObject(ctx, bucketName, objectName, minio.GetObjectOptions{})
+func (s *MinIOStorageService) GetObject(ctx context.Context, bucketName, objectName, versionID string) (GetObjectResult, error) {
+	logger.Info("GetObject", zap.String("versionID", versionID))
+	opts := minio.GetObjectOptions{}
+	if versionID != "" {
+		opts.VersionID = versionID
+	}
+	logger.Info("GetObject", zap.String("opts.VersionID", opts.VersionID))
+	obj, err := s.client.GetObject(ctx, bucketName, objectName, opts)
 	if err != nil {
 		return GetObjectResult{}, fmt.Errorf("MinIO 获取文件失败: %w", err)
 	}

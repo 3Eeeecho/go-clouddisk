@@ -179,6 +179,7 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 				Size:      uint64(putResult.Size),
 				OssKey:    putResult.Key,
 				VersionID: putResult.VersionID,
+				MD5Hash:   req.FileHash,
 			}
 			if err := fileVersionRepo.Create(newVersion); err != nil {
 				return fmt.Errorf("failed to create new file version: %w", err)
@@ -188,19 +189,32 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 			existingFile.Size = uint64(putResult.Size)
 			existingFile.MD5Hash = &req.FileHash
 			existingFile.OssKey = &putResult.Key
+			existingFile.MimeType = &req.MimeType
+			existingFile.VersionID = &putResult.VersionID
 			if err := fileRepo.Update(existingFile); err != nil {
 				return fmt.Errorf("failed to update main file record: %w", err)
 			}
 			finalFile = existingFile
 		} else {
 			// --- 创建新文件 ---
+			var parentPath = "/"
+			if req.ParentFolderID != nil {
+				parent, err := fileRepo.FindByID(*req.ParentFolderID)
+				if err != nil {
+					return fmt.Errorf("failed to find parent folder: %w", err)
+				}
+				parentPath = parent.Path + parent.FileName + "/"
+			}
+
 			newFile := &models.File{
 				UserID:         userID,
 				UUID:           uuid.NewString(),
 				FileName:       req.FileName,
 				ParentFolderID: req.ParentFolderID,
-				Path:           "/", // TODO: 确定路径
+				Path:           parentPath,
 				IsFolder:       0,
+				MimeType:       &req.MimeType,
+				VersionID:      &putResult.VersionID,
 				MD5Hash:        &req.FileHash,
 				Status:         models.StatusNormal,
 				Size:           uint64(putResult.Size),
@@ -221,6 +235,7 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 				Size:      uint64(putResult.Size),
 				OssKey:    putResult.Key,
 				VersionID: putResult.VersionID,
+				MD5Hash:   req.FileHash,
 			}
 			if err := fileVersionRepo.Create(firstVersion); err != nil {
 				return fmt.Errorf("failed to create first file version: %w", err)

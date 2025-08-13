@@ -29,6 +29,7 @@ type UploadCompleteRequest struct {
 	FileName       string  `json:"file_name" binding:"required"`
 	UploadID       string  `json:"upload_id" binding:"required"`
 	ParentFolderID *uint64 `json:"parent_folder_id"`
+	MimeType       string  `json:"mime_type" binding:"required"`
 }
 
 // ListPartsRequest 定义了查询已上传分块的请求体

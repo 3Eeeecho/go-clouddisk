@@ -65,13 +65,18 @@ func (s *AliyunOSSStorageService) PutObject(ctx context.Context, bucketName, obj
 }
 
 // GetObject 实现 StorageService 接口的 GetObject 方法
-func (s *AliyunOSSStorageService) GetObject(ctx context.Context, bucketName, objectName string) (GetObjectResult, error) {
+func (s *AliyunOSSStorageService) GetObject(ctx context.Context, bucketName, objectName, versionID string) (GetObjectResult, error) {
 	bucket, err := s.client.Bucket(bucketName)
 	if err != nil {
 		return GetObjectResult{}, fmt.Errorf("获取OSS存储桶失败: %w", err)
 	}
 
-	reader, err := bucket.GetObject(objectName)
+	var opts []oss.Option
+	if versionID != "" {
+		opts = append(opts, oss.VersionId(versionID))
+	}
+
+	reader, err := bucket.GetObject(objectName, opts...)
 	if err != nil {
 		return GetObjectResult{}, fmt.Errorf("阿里云OSS获取文件失败: %w", err)
 	}

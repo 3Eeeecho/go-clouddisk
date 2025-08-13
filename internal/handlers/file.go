@@ -200,7 +200,11 @@ func (h *FileHandler) DownloadFile(c *gin.Context) {
 		url.PathEscape(file.FileName),
 	)
 	c.Header("Content-Disposition", contentDisposition)
-	c.Header("Content-Type", *file.MimeType)
+	if file.MimeType != nil {
+		c.Header("Content-Type", *file.MimeType)
+	} else {
+		c.Header("Content-Type", "application/octet-stream")
+	}
 	c.Header("Content-Length", fmt.Sprintf("%d", file.Size))
 
 	_, err = io.Copy(c.Writer, reader)
@@ -597,4 +601,46 @@ func (h *FileHandler) ListFileVersions(c *gin.Context) {
 	response.Success(c, http.StatusOK, "File versions list successfully", gin.H{
 		"file_versions": versions,
 	})
+}
+
+// @Summary 恢复文件版本
+// @Description 将指定文件恢复到指定的历史版本
+// @Tags 文件
+// @Security BearerAuth
+// @Param file_id path int true "文件ID"
+// @Param version_id path string true "版本ID"
+// @Success 200 {object} xerr.Response "恢复成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Failure 403 {object} xerr.Response "权限不足"
+// @Failure 404 {object} xerr.Response "文件或版本未找到"
+// @Router /api/v1/files/{file_id}/versions/{version_id}/restore [post]
+func (h *FileHandler) RestoreFileVersion(c *gin.Context) {
+	currentUserID, ok := utils.GetUserIDFromContext(c)
+	if !ok {
+		return
+	}
+
+	fileIDStr := c.Param("file_id")
+	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		return
+	}
+
+	versionID := c.Param("version_id")
+
+	err = h.fileService.RestoreFileVersion(currentUserID, fileID, versionID)
+	if err != nil {
+		if errors.Is(err, xerr.ErrFileNotFound) {
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+		} else if errors.Is(err, xerr.ErrPermissionDenied) {
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+		} else {
+			logger.Error("RestoreFileVersion: Failed to restore file version", zap.Uint64("fileID", fileID), zap.String("versionID", versionID), zap.Error(err))
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to restore file version")
+		}
+		return
+	}
+
+	response.Success(c, http.StatusOK, "File version restored successfully", nil)
 }

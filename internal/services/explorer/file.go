@@ -347,7 +347,7 @@ func (s *fileService) Download(ctx context.Context, userID uint64, fileID uint64
 		logger.Error("Download: Error retrieving file from DB", zap.Uint64("fileID", fileID), zap.Error(err))
 		return nil, nil, fmt.Errorf("file service: failed to retrieve file: %w", xerr.ErrDatabaseError)
 	}
-
+	logger.Info("Download", zap.String("versionID", *file.VersionID))
 	// 如果file是文件夹,压缩成zip并下载
 	if file.IsFolder == 1 {
 		err := s.domainService.ValidateFolder(userID, file)
@@ -366,7 +366,6 @@ func (s *fileService) Download(ctx context.Context, userID uint64, fileID uint64
 
 // 文件删除
 func (s *fileService) SoftDelete(userID uint64, fileID uint64) error {
-	//TODO 添加fileversion相关的删除逻辑
 	// 验证文件
 	_, err := s.domainService.CheckFile(userID, fileID)
 	if err != nil {
@@ -490,6 +489,7 @@ func (s *fileService) ListFileVersions(userID uint64, fileID uint64) ([]models.F
 	return versions, nil
 }
 
+// 还原文件版本到指定的版本,需要文件状态正常
 func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID string) error {
 	// 1. 验证用户是否有权访问该文件
 	file, err := s.domainService.CheckFile(userID, fileID)
@@ -514,9 +514,9 @@ func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID
 	// 4. 更新主文件记录
 	file.Size = versionToRestore.Size
 	file.OssKey = &versionToRestore.OssKey
-	//TODO  注意：MD5Hash 可能需要重新计算或从版本记录中获取
-	// 这里我们假设版本记录中也存储了 MD5Hash
-	// file.MD5Hash = &versionToRestore.MD5Hash
+	file.VersionID = &versionToRestore.VersionID
+	file.DeletedAt = gorm.DeletedAt{}
+	file.MD5Hash = &versionToRestore.MD5Hash
 
 	if err := s.fileRepo.Update(file); err != nil {
 		logger.Error("RestoreFileVersion: Failed to update file record", zap.Uint64("fileID", fileID), zap.Error(err))

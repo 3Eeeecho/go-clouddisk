@@ -26,6 +26,7 @@ type File struct {
 	MimeType       *string        `gorm:"type:varchar(128);default:null" json:"mime_type"`
 	OssBucket      *string        `gorm:"type:varchar(64);default:null" json:"oss_bucket"`
 	OssKey         *string        `gorm:"type:varchar(255);default:null" json:"oss_key"`
+	VersionID      *string        `gorm:"type:varchar(128);default:null" json:"version_id"`
 	MD5Hash        *string        `gorm:"type:varchar(32);default:null" json:"md5_hash"`
 	Status         uint8          `gorm:"type:tinyint unsigned;not null;default:1" json:"status"` // 1:正常, 0:回收站
 	CreatedAt      time.Time      `gorm:"autoCreateTime" json:"created_at"`

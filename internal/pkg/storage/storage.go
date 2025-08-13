@@ -13,7 +13,7 @@ type StorageService interface {
 	// 上传文件到指定存储桶，返回存储对象的信息或错误
 	PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, contentType string) (PutObjectResult, error)
 	// 从指定存储桶下载文件，返回一个读取器和对象信息
-	GetObject(ctx context.Context, bucketName, objectName string) (GetObjectResult, error)
+	GetObject(ctx context.Context, bucketName, objectName, versionID string) (GetObjectResult, error)
 	// 从指定存储桶删除指定版本文件
 	RemoveObject(ctx context.Context, bucketName, objectName, VersionID string) error
 	// 从指定存储桶删除所有版本文件

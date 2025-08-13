@@ -414,6 +414,15 @@ func (r *fileRepository) Update(file *models.File) error {
 	}
 
 	ctx := context.Background()
+
+	// 在发送异步消息前，立即、同步地删除当前文件的元数据缓存
+	// 这可以确保后续的读请求会发生缓存未命中，从而直接从数据库读取最新数据，避免数据不一致
+	fileMetadataKey := cache.GenerateFileMetadataKey(file.ID)
+	if err := r.cache.Del(ctx, fileMetadataKey); err != nil {
+		// 即使删除缓存失败，也只记录日志，不阻塞主流程，因为异步消费者最终会处理
+		logger.Error("Update: Failed to synchronously delete file metadata cache", zap.Uint64("fileID", file.ID), zap.Error(err))
+	}
+
 	message := cache.CacheUpdateMessage{
 		File:              *file,
 		OldParentFolderID: oldFile.ParentFolderID,
