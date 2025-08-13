@@ -111,6 +111,7 @@ func (s *MinIOStorageService) GetObject(ctx context.Context, bucketName, objectN
 
 // 从指定存储桶删除指定版本文件
 func (s *MinIOStorageService) RemoveObject(ctx context.Context, bucketName, objectName, VersionID string) error {
+	//TODO 处理空版本号问题
 	opts := &minio.RemoveObjectOptions{
 		GovernanceBypass: true,
 		VersionID:        VersionID,

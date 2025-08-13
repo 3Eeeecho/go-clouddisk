@@ -542,12 +542,7 @@ func (h *FileHandler) DeleteFileVersion(c *gin.Context) {
 		return
 	}
 
-	versionIDStr := c.Param("version_id")
-	versionID, err := strconv.ParseUint(versionIDStr, 10, 64)
-	if err != nil {
-		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid version ID format")
-		return
-	}
+	versionID := c.Param("version_id")
 
 	err = h.fileService.DeleteFileVersion(currentUserID, fileID, versionID)
 	if err != nil {
@@ -556,11 +551,50 @@ func (h *FileHandler) DeleteFileVersion(c *gin.Context) {
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
 			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
 		} else {
-			logger.Error("DeleteFileVersion: Failed to delete file version", zap.Uint64("fileID", fileID), zap.Uint64("versionID", versionID), zap.Error(err))
+			logger.Error("DeleteFileVersion: Failed to delete file version", zap.Uint64("fileID", fileID), zap.String("versionID", versionID), zap.Error(err))
 			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to delete file version")
 		}
 		return
 	}
 
 	response.Success(c, http.StatusOK, "File version deleted successfully", nil)
+}
+
+// @Summary 列举文件版本
+// @Description 列举指定文件的所有版本记录
+// @Tags 文件
+// @Security BearerAuth
+// @Param file_id path int true "文件ID"
+// @Success 200 {object} xerr.Response "列举成功"
+// @Failure 400 {object} xerr.Response "参数错误"
+// @Router /api/v1/files/versions/{file_id} [get]
+func (h *FileHandler) ListFileVersions(c *gin.Context) {
+	currentUserID, ok := utils.GetUserIDFromContext(c)
+	if !ok {
+		return
+	}
+
+	fileIDStr := c.Param("file_id")
+	fileID, err := strconv.ParseUint(fileIDStr, 10, 64)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid file ID format")
+		return
+	}
+
+	versions, err := h.fileService.ListFileVersions(currentUserID, fileID)
+	if err != nil {
+		if errors.Is(err, xerr.ErrFileNotFound) {
+			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
+		} else if errors.Is(err, xerr.ErrPermissionDenied) {
+			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
+		} else {
+			logger.Error("ListFileVersions: Failed to list file versions", zap.Uint64("fileID", fileID), zap.Error(err))
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list file versions")
+		}
+		return
+	}
+
+	response.Success(c, http.StatusOK, "File versions list successfully", gin.H{
+		"file_versions": versions,
+	})
 }

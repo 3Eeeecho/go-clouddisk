@@ -40,7 +40,7 @@ type FileService interface {
 	// 文件删除
 	SoftDelete(userID uint64, fileID uint64) error
 	PermanentDelete(userID uint64, fileID uint64) error
-	DeleteFileVersion(userID uint64, fileID uint64, versionID uint64) error
+	DeleteFileVersion(userID uint64, fileID uint64, versionID string) error
 
 	// 回收站操作
 	ListRecycleBinFiles(userID uint64) ([]models.File, error)
@@ -50,7 +50,7 @@ type FileService interface {
 	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error)
 	MoveFile(userID uint64, fileID uint64, parentFolderID *uint64) (*models.File, error)
 	ListFileVersions(userID uint64, fileID uint64) ([]models.FileVersion, error)
-	RestoreFileVersion(userID uint64, fileID uint64, versionID uint64) error
+	RestoreFileVersion(userID uint64, fileID uint64, versionID string) error
 }
 
 type fileService struct {
@@ -423,7 +423,7 @@ func (s *fileService) PermanentDelete(userID uint64, fileID uint64) error {
 		}
 		taskBody, _ := json.Marshal(task)
 
-		if err := s.mqClient.Publish("file_delete_queue", taskBody); err != nil {
+		if err := s.mqClient.Publish("delete_all_versions_queue", taskBody); err != nil {
 			logger.Error("PermanentDeleteFile: Failed to publish delete task to RabbitMQ", zap.Uint64("fileID", fileID), zap.Error(err))
 			// 注意：这里事务会回滚，文件状态将恢复。
 			return fmt.Errorf("file service: failed to publish delete task: %w", xerr.ErrMQError)
@@ -434,7 +434,7 @@ func (s *fileService) PermanentDelete(userID uint64, fileID uint64) error {
 	})
 }
 
-func (s *fileService) DeleteFileVersion(userID uint64, fileID uint64, versionID uint64) error {
+func (s *fileService) DeleteFileVersion(userID uint64, fileID uint64, versionID string) error {
 	// 1. 验证用户是否有权访问该文件
 	file, err := s.domainService.CheckFile(userID, fileID)
 	if err != nil {
@@ -442,7 +442,7 @@ func (s *fileService) DeleteFileVersion(userID uint64, fileID uint64, versionID 
 	}
 
 	// 2. 查找指定的版本
-	versionToDelete, err := s.fileVersionRepo.FindByID(versionID)
+	versionToDelete, err := s.fileVersionRepo.FindByVersionID(versionID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("file service: %w", xerr.ErrFileNotFound)
@@ -464,18 +464,12 @@ func (s *fileService) DeleteFileVersion(userID uint64, fileID uint64, versionID 
 	}
 	taskBody, _ := json.Marshal(task)
 
-	if err := s.mqClient.Publish("file_delete_queue", taskBody); err != nil {
+	if err := s.mqClient.Publish("delete_specific_version_queue", taskBody); err != nil {
 		logger.Error("DeleteFileVersion: Failed to publish delete task to RabbitMQ", zap.Uint64("fileID", fileID), zap.Error(err))
 		return fmt.Errorf("file service: failed to publish delete task: %w", xerr.ErrMQError)
 	}
 
-	// 5. 从数据库中删除版本记录
-	if err := s.fileVersionRepo.Delete(versionID); err != nil {
-		logger.Error("DeleteFileVersion: Failed to delete file version from DB", zap.Uint64("versionID", versionID), zap.Error(err))
-		return fmt.Errorf("file service: failed to delete file version: %w", xerr.ErrDatabaseError)
-	}
-
-	logger.Info("DeleteFileVersion: Successfully deleted file version", zap.Uint64("fileID", fileID), zap.Uint64("versionID", versionID))
+	logger.Info("DeleteFileVersion: Successfully deleted file version", zap.Uint64("fileID", fileID), zap.String("versionID", versionID))
 	return nil
 }
 
@@ -496,7 +490,7 @@ func (s *fileService) ListFileVersions(userID uint64, fileID uint64) ([]models.F
 	return versions, nil
 }
 
-func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID uint64) error {
+func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID string) error {
 	// 1. 验证用户是否有权访问该文件
 	file, err := s.domainService.CheckFile(userID, fileID)
 	if err != nil {
@@ -504,7 +498,7 @@ func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID
 	}
 
 	// 2. 查找指定的版本
-	versionToRestore, err := s.fileVersionRepo.FindByID(versionID)
+	versionToRestore, err := s.fileVersionRepo.FindByVersionID(versionID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return fmt.Errorf("file service: %w", xerr.ErrFileNotFound)
@@ -529,7 +523,7 @@ func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID
 		return fmt.Errorf("file service: failed to update file record: %w", xerr.ErrDatabaseError)
 	}
 
-	logger.Info("RestoreFileVersion: Successfully restored file version", zap.Uint64("fileID", fileID), zap.Uint64("versionID", versionID))
+	logger.Info("RestoreFileVersion: Successfully restored file version", zap.Uint64("fileID", fileID), zap.String("versionID", versionID))
 	return nil
 
 }

@@ -452,29 +452,15 @@ func (r *fileRepository) SoftDelete(fileID uint64) error {
 		return xerr.ErrFileNotFound
 	}
 
-	err = r.db.Transaction(func(tx *gorm.DB) error {
-		// 软删除所有文件版本记录
-		if err := tx.Model(&models.FileVersion{}).
-			Where("file_id = ?", fileID).
-			Updates(map[string]any{
-				"deleted_at": time.Now(),
-			}).Error; err != nil {
-			return fmt.Errorf("failed to soft delete versions: %w", err)
-		}
-		// 软删除文件
-		if err = tx.Model(file).
-			Where("id = ?", fileID).
-			Updates(map[string]any{
-				"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
-				"status":     0,          // 设置 status 字段为 0
-			}).Error; err != nil {
-			logger.Error("SoftDelete: Failed to soft delete file in DB", zap.Error(err), zap.Uint64("fileID", fileID))
-			return fmt.Errorf("failed to soft delete file: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return err
+	// 软删除文件
+	if err = r.db.Model(file).
+		Where("id = ?", fileID).
+		Updates(map[string]any{
+			"deleted_at": time.Now(), // 显式设置 deleted_at，以防 GORM 版本行为不一致
+			"status":     0,          // 设置 status 字段为 0
+		}).Error; err != nil {
+		logger.Error("SoftDelete: Failed to soft delete file in DB", zap.Error(err), zap.Uint64("fileID", fileID))
+		return fmt.Errorf("failed to soft delete file: %w", err)
 	}
 
 	ctx := context.Background()
@@ -536,21 +522,10 @@ func (r *fileRepository) PermanentDelete(fileID uint64) error {
 		return xerr.ErrFileNotFound
 	}
 
-	err = r.db.Transaction(func(tx *gorm.DB) error {
-		// 永久所有文件版本记录
-		if err := tx.Unscoped().Where("file_id = ?", fileID).Delete(&models.FileVersion{}).Error; err != nil {
-			return fmt.Errorf("failed to permanently delete versions: %w", err)
-		}
-
-		// 永久删除数据库记录
-		err = tx.Unscoped().Delete(&models.File{}, fileID).Error // Unscoped() 绕过软删除
-		if err != nil {
-			return fmt.Errorf("failed to permanently delete file: %w", err)
-		}
-		return nil
-	})
+	// 永久删除数据库记录
+	err = r.db.Unscoped().Delete(&models.File{}, fileID).Error // Unscoped() 绕过软删除
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to permanently delete file: %w", err)
 	}
 
 	ctx := context.Background()
@@ -812,7 +787,7 @@ func (r *fileRepository) saveFilesToCacheList(ctx context.Context, cacheKey stri
 				logger.Error("saveFilesToCacheList: Failed to map models.File to hash for caching", zap.Uint64("fileID", file.ID), zap.Error(mapErr))
 				continue // 记录错误但不阻止其他文件被缓存
 			}
-			metaKey := fmt.Sprintf("file:metadata:%d", file.ID)
+			metaKey := cache.GenerateFileMetadataKey(file.ID)
 			pipe.HMSet(ctx, metaKey, fileMap)
 			pipe.Expire(ctx, metaKey, cache.CacheTTL+time.Duration(rand.Intn(300))*time.Second) // Hash 也要设置 TTL
 

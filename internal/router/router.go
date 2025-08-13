@@ -62,7 +62,6 @@ func InitRouter(authHandler *handlers.AuthHandler,
 
 			fileGroup.GET("/", fileHandler.ListUserFiles)
 			fileGroup.GET("/:file_id", fileHandler.GetSpecificFile)
-			//fileGroup.POST("/upload", fileHandler.UploadFile)
 			fileGroup.POST("/folder", fileHandler.CreateFolder)
 			fileGroup.GET("/download/:file_id", fileHandler.DownloadFile)
 			fileGroup.GET("/download/folder/:id", fileHandler.DownloadFolder)
@@ -72,7 +71,10 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			fileGroup.PUT("/restore/:file_id", fileHandler.RestoreFile)
 			fileGroup.PUT("/rename/:id", fileHandler.RenameFile)
 			fileGroup.PUT("/move", fileHandler.MoveFile)
+
+			//fileVersion
 			fileGroup.DELETE("/:file_id/versions/:version_id", fileHandler.DeleteFileVersion)
+			fileGroup.GET("/versions/:file_id", fileHandler.ListFileVersions)
 		}
 
 		// 分享相关路由

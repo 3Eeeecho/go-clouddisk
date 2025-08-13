@@ -43,6 +43,7 @@ var (
 	ErrShareNotFound         = errors.New("分享链接不存在或已过期")
 	ErrFileNotInRecycleBin   = errors.New("文件不在回收站中")
 	ErrUploadSessionNotFound = errors.New("上传会话不存在或已过期")
+	ErrFileVersionNotFound   = errors.New("文件版本号不存在")
 
 	// 业务逻辑冲突
 	ErrDirNotEmpty        = errors.New("目录不为空，无法删除")

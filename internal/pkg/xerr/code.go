@@ -37,6 +37,7 @@ const (
 	ShareNotFoundCode         = 40404 // 分享链接不存在
 	FileNotInRecycleBinCode   = 40405 // 文件不在回收站中
 	UploadSessionNotFoundCode = 40406 // 上传会话不存在
+	FileVersionNotFoundCode   = 40407 //版本记录不存在
 
 	// --- 业务逻辑冲突系列 (409xx) ---
 	UserAlreadyExistsCode  = 40900 // 用户名已存在

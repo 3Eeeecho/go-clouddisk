@@ -93,7 +93,7 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	userHandler := handlers.NewUserHandler(userService)
 
 	// 启动所有后台 Worker
-	worker.StartAllWorkers(config.AppConfig, rabbitMQClient, fileRepo, ss)
+	worker.StartAllWorkers(config.AppConfig, rabbitMQClient, fileRepo, fileVersionRepo, tm, ss)
 
 	// 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig
