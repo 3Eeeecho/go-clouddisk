@@ -53,82 +53,110 @@ func FileToMap(file *models.File) (map[string]any, error) {
 	return result, nil
 }
 
-// 将 map[string]string 映射回 models.File
-// 需要处理字符串到正确类型的转换，尤其是时间类型和指针
-// 采用手动转换，确保类型安全，彻底解决 unmarshal 错误。
-func MapToFile(dataMap map[string]string) (*models.File, error) {
-	var file models.File
-
-	// 定义一个解码钩子，用于将字符串转换为各种目标类型
-	hook := func(f reflect.Type, t reflect.Type, data any) (any, error) {
-		// 只处理从 string 到其他类型的转换
+// stringToTimeHookFunc 创建一个 mapstructure 解码钩子，用于将字符串转换为时间类型。
+func stringToTimeHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
 		if f.Kind() != reflect.String {
 			return data, nil
 		}
-
-		// 获取源字符串
-		sourceString := data.(string)
-
-		// 如果源字符串为空，对于指针类型应为 nil，对于值类型应为其零值
-		if sourceString == "" {
-			if t.Kind() == reflect.Ptr {
-				return nil, nil // 返回 nil 指针
-			}
-			// 对于非指针类型，返回其零值
+		s := data.(string)
+		if s == "" {
+			// 对于空字符串，返回类型的零值
 			return reflect.Zero(t).Interface(), nil
 		}
 
-		// 根据目标类型进行转换
 		switch t {
 		case reflect.TypeOf(time.Time{}):
-			return time.Parse(time.RFC3339Nano, sourceString)
-
+			return time.Parse(time.RFC3339Nano, s)
 		case reflect.TypeOf(gorm.DeletedAt{}):
-			parsedTime, err := time.Parse(time.RFC3339Nano, sourceString)
+			parsedTime, err := time.Parse(time.RFC3339Nano, s)
 			if err != nil {
 				return nil, err
 			}
 			return gorm.DeletedAt{Time: parsedTime, Valid: true}, nil
 		}
 
-		// 处理所有数值类型和指针数值类型
-		switch t.Kind() {
-		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-			return strconv.ParseUint(sourceString, 10, 64)
-		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-			return strconv.ParseInt(sourceString, 10, 64)
-		case reflect.Ptr:
-			// 处理指针类型的数值，例如 *uint64
-			switch t.Elem().Kind() {
-			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-				val, err := strconv.ParseUint(sourceString, 10, 64)
-				if err != nil {
-					return nil, err
-				}
-				// 需要返回一个指向该值的指针，但类型要匹配
-				// 例如，如果目标是 *uint64，我们需要返回一个 *uint64
-				// 使用反射来创建正确类型的指针
-				ptr := reflect.New(t.Elem())
-				ptr.Elem().SetUint(val)
-				return ptr.Interface(), nil
-			}
-		}
-
-		// 其他类型保持默认转换行为
 		return data, nil
 	}
+}
 
-	// 配置解码器
+// stringToNumericHookFunc 创建一个解码钩子，用于将字符串转换为所有数值类型（包括指针）。
+func stringToNumericHookFunc() mapstructure.DecodeHookFunc {
+	return func(f reflect.Type, t reflect.Type, data any) (any, error) {
+		if f.Kind() != reflect.String {
+			return data, nil
+		}
+		sourceString := data.(string)
+
+		// 如果字符串为空，指针类型应为 nil，值类型为其零值
+		if sourceString == "" {
+			if t.Kind() == reflect.Ptr {
+				return nil, nil // 返回 nil 指针
+			}
+			return reflect.Zero(t).Interface(), nil
+		}
+
+		// 统一处理指针和非指针类型
+		targetType := t
+		isPtr := t.Kind() == reflect.Ptr
+		if isPtr {
+			targetType = t.Elem()
+		}
+
+		var result any
+		var err error
+
+		switch targetType.Kind() {
+		case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+			val, parseErr := strconv.ParseUint(sourceString, 10, 64)
+			if parseErr == nil {
+				// 使用反射来设置正确大小的 uint
+				newVal := reflect.New(targetType).Elem()
+				newVal.SetUint(val)
+				result = newVal.Interface()
+			}
+			err = parseErr
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+			val, parseErr := strconv.ParseInt(sourceString, 10, 64)
+			if parseErr == nil {
+				// 使用反射来设置正确大小的 int
+				newVal := reflect.New(targetType).Elem()
+				newVal.SetInt(val)
+				result = newVal.Interface()
+			}
+			err = parseErr
+		default:
+			// 如果不是目标数值类型，则不处理
+			return data, nil
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		if isPtr {
+			// 如果原始目标类型是指针，则返回一个指向新值的指针
+			ptr := reflect.New(targetType)
+			ptr.Elem().Set(reflect.ValueOf(result))
+			return ptr.Interface(), nil
+		}
+
+		return result, nil
+	}
+}
+
+// 将 map[string]string 映射回 models.File
+func MapToFile(dataMap map[string]string) (*models.File, error) {
+	var file models.File
+
 	config := &mapstructure.DecoderConfig{
-		Result:  &file,
-		TagName: "json", // 使用 'json' 标签来匹配 map 的键和结构体字段
-		DecodeHook: mapstructure.ComposeDecodeHookFunc(
-			// 可以组合多个钩子，这里用一个就够了
-			hook,
-		),
-		// 当 map 中的 key 在 struct 中找不到时，返回错误
-		// 这有助于发现字段名不匹配的问题
+		Result:      &file,
+		TagName:     "json",
 		ErrorUnused: false,
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			stringToTimeHookFunc(),
+			stringToNumericHookFunc(),
+		),
 	}
 
 	decoder, err := mapstructure.NewDecoder(config)
@@ -136,7 +164,6 @@ func MapToFile(dataMap map[string]string) (*models.File, error) {
 		return nil, fmt.Errorf("failed to create map decoder: %w", err)
 	}
 
-	// 执行解码
 	if err := decoder.Decode(dataMap); err != nil {
 		return nil, fmt.Errorf("failed to decode map to File struct: %w", err)
 	}

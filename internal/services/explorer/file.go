@@ -28,9 +28,6 @@ type FileService interface {
 	GetFileByMD5Hash(userID uint64, md5Hash string) (*models.File, error)
 	GetFilesByUserID(userID uint64, parentFolderID *uint64) ([]models.File, error)
 
-	// 文件夹操作
-	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
-
 	//文件上传
 	//UploadFile(userID uint64, originalName, mimeType string, filesize uint64, parentFolderID *uint64, fileContent io.Reader) (*models.File, error)
 
@@ -47,6 +44,7 @@ type FileService interface {
 	RestoreFile(userID uint64, fileID uint64) error
 
 	// 文件操作
+	CreateFolder(userID uint64, folderName string, parentFolderID *uint64) (*models.File, error)
 	RenameFile(userID uint64, fileID uint64, newFileName string) (*models.File, error)
 	MoveFile(userID uint64, fileID uint64, parentFolderID *uint64) (*models.File, error)
 	ListFileVersions(userID uint64, fileID uint64) ([]models.FileVersion, error)

@@ -105,7 +105,7 @@ func (s *uploadService) UploadChunk(ctx context.Context, userID uint64, req *mod
 	err = s.deps.Cache.HSet(ctx, redisKey, fmt.Sprintf("%d", partResult.PartNumber), partResult.ETag)
 	if err != nil {
 		logger.Error("UploadChunk: Failed to save part info to redis", zap.Error(err), zap.String("uploadID", req.UploadID))
-		// 注意：这里上传已经成功，但记录失败。需要考虑补偿策略或更强的事务保证。
+		// TODO 注意：这里上传已经成功，但记录失败。需要考虑补偿策略或更强的事务保证。
 		// 简单起见，我们先返回错误。
 		return fmt.Errorf("upload service: failed to save part info: %w", err)
 	}
@@ -172,6 +172,7 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 				newVersionNumber = int(latestVersion.Version) + 1
 			}
 
+			// 添加新版本记录
 			logger.Info("putResult.Size", zap.Uint64("putResult.Size", uint64(putResult.Size)))
 			newVersion := &models.FileVersion{
 				FileID:    existingFile.ID,
