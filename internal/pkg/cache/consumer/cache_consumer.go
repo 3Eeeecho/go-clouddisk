@@ -86,6 +86,7 @@ func processCacheMessage(ctx context.Context, redisClient *redis.Client, message
 	// 获取旧的父文件夹键和新的父文件夹键
 	oldListCacheKey := cache.GenerateFileListKey(updateMsg.File.UserID, updateMsg.OldParentFolderID)
 	newListCacheKey := cache.GenerateFileListKey(updateMsg.File.UserID, updateMsg.File.ParentFolderID)
+	logger.Info("processCacheMessage", zap.String("oldListCacheKey", oldListCacheKey), zap.String("newListCacheKey", newListCacheKey))
 
 	// 文件ID的字符串形式
 	fileIDStr := strconv.FormatUint(updateMsg.File.ID, 10)
@@ -95,12 +96,7 @@ func processCacheMessage(ctx context.Context, redisClient *redis.Client, message
 	}
 
 	// 判断 ParentFolderID 是否变化
-	parentFolderIDChanged := false
-	if oldListCacheKey != newListCacheKey { // 更简洁的判断方式
-		parentFolderIDChanged = true
-	}
-
-	if parentFolderIDChanged {
+	if oldListCacheKey != newListCacheKey {
 		// 从旧父目录的 Sorted Set 中 ZRem 掉该文件 ID
 		pipe.ZRem(ctx, oldListCacheKey, fileIDStr)
 
@@ -115,16 +111,31 @@ func processCacheMessage(ctx context.Context, redisClient *redis.Client, message
 		pipe.ZRem(ctx, newListCacheKey, "__EMPTY_LIST__") // 确保移除空标记
 	}
 
-	// TODO 如果业务允许MD5更新（例如文件内容更新），则需要删除旧缓存,并设置新缓存
+	// --- 精确更新回收站缓存 ---
+	deletedListCacheKey := cache.GenerateDeletedFilesKey(updateMsg.File.UserID)
+	wasDeleted := updateMsg.OldDeletedAt.Valid
+	isNowDeleted := updateMsg.File.DeletedAt.Valid
 
-	// 如果文件状态从“已删除”恢复，或从“正常”变为“已删除”，需要更新已删除列表缓存
-	// 这里先简单地删除整个 deleted 列表缓存，强制下次查询时重建
-	// 更精确的做法是根据 oldFile.DeletedAt 和 file.DeletedAt 的状态来 ZRem/ZAdd
-	pipe.Del(ctx, fmt.Sprintf("files:deleted:user:%d", updateMsg.File.UserID))
+	if !wasDeleted && isNowDeleted {
+		// 文件被软删除：添加到回收站列表
+		deletedZMember := &redis.Z{
+			Score:  float64(updateMsg.File.DeletedAt.Time.Unix()),
+			Member: fileIDStr,
+		}
+		pipe.ZAdd(ctx, deletedListCacheKey, deletedZMember)
+		pipe.ZRem(ctx, deletedListCacheKey, "__EMPTY_LIST__") // 确保移除空标记
+	} else if wasDeleted && !isNowDeleted {
+		// 文件被恢复：从回收站列表移除
+		pipe.ZRem(ctx, deletedListCacheKey, fileIDStr)
+	}
+	// 如果删除状态没有改变，则不执行任何操作
+
+	// TODO: 如果业务允许MD5更新（例如文件内容更新），则需要删除旧缓存,并设置新缓存
 
 	// 执行管道命令
 	if _, execErr := pipe.Exec(ctx); execErr != nil {
-		return fmt.Errorf("failed to execute Redis pipeline: %w", err)
+		// 修复错误包装：应该包装 execErr 而不是 err
+		return fmt.Errorf("failed to execute Redis pipeline: %w", execErr)
 	}
 	logger.Info("successfully process message", zap.Uint64("file_id", updateMsg.File.ID))
 	return nil
@@ -202,16 +213,18 @@ func processInvalidationMessage(ctx context.Context, db *gorm.DB, redisClient *r
 		redisClient.Del(ctx, metaKeys...)
 	}
 
-	//删除文件列表缓存
-	// 批量更新路径意味着父文件夹可能没有变，但列表缓存仍然需要失效
-	// 简单粗暴但有效的方法是：删除用户所有文件列表缓存
-	// TODO 如果需要更精确的删除，你需要记录每个文件的旧 parent_folder_id，并 ZREM
-	// 这里我们选择删除所有相关用户的文件列表缓存，下次查询时重建
-	userListKeyPrefix := fmt.Sprintf("files:user:%d:folder:*", pathInvalidationMsg.UserID)
-	iter := redisClient.Scan(ctx, 0, userListKeyPrefix, 0).Iterator()
-	for iter.Next(ctx) {
-		redisClient.Del(ctx, iter.Val())
-	}
+	// 删除文件列表缓存的逻辑被移除。
+	// 移动文件夹时，文件夹本身的 ParentFolderID 会变化，这会触发 processCacheMessage，
+	// 正确地更新源目录和目标目录的列表缓存。
+	// 子文件的 Path 字段虽然变了，但它们的 ParentFolderID 没有变，所以它们所属的列表缓存 (files:user:id:folder:id) 是不变的。
+	// 因此，我们只需要让子文件的元数据缓存失效即可，这在前面已经通过 Del(metaKeys) 完成了。
+	// 删除所有文件夹列表缓存是错误且没有必要的。
+
+	logger.Info("Successfully invalidated metadata caches for path update",
+		zap.Int("affected_files_count", len(affectedFiles)),
+		zap.Uint64("user_id", pathInvalidationMsg.UserID),
+		zap.String("old_path_prefix", pathInvalidationMsg.OldPathPrefix),
+	)
 
 	return nil
 }

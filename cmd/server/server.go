@@ -10,6 +10,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/handlers"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/cache"
+	cacheConsumer "github.com/3Eeeecho/go-clouddisk/internal/pkg/cache/consumer"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/logger"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/mq"
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/mq/worker"
@@ -94,6 +95,10 @@ func NewServer(cfg *config.Config) (*Server, error) {
 
 	// 启动所有后台 Worker
 	worker.StartAllWorkers(config.AppConfig, rabbitMQClient, fileRepo, fileVersionRepo, tm, ss)
+
+	// 启动 Redis Stream 消费者
+	go cacheConsumer.StartCacheUpdateConsumer(context.Background(), redisClient)
+	go cacheConsumer.StartPathInvalidationConsumer(context.Background(), mysqlDB, redisClient)
 
 	// 初始化 Gin 引擎和注册路由
 	// 将所有依赖传入 RouterConfig

@@ -89,6 +89,9 @@ func (r *fileRepository) Create(file *models.File) error {
 	//如果之前存过"__EMPTY_LIST__",需要ZRem掉
 	pipe.ZRem(ctx, listCacheKey, "__EMPTY_LIST__")
 
+	// 为列表缓存设置过期时间
+	pipe.Expire(ctx, listCacheKey, cache.CacheTTL+time.Duration(rand.Intn(300))*time.Second)
+
 	if _, execErr := pipe.Exec(ctx); execErr != nil {
 		logger.Error("Create: Failed to execute Redis pipeline for cache update",
 			zap.Uint64("fileID", file.ID),
