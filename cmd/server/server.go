@@ -61,7 +61,8 @@ func NewServer(cfg *config.Config) (*Server, error) {
 
 	//  初始化 Repositories
 	redisCache := cache.NewRedisCache(redisClient)
-	fileRepo := repositories.NewFileRepository(mysqlDB, redisCache)
+	dbFileRepo := repositories.NewDBFileRepository(mysqlDB)
+	fileRepo := repositories.NewCachedFileRepository(dbFileRepo, redisCache)
 	userRepo := repositories.NewUserRepository(mysqlDB)
 	share_repo := repositories.NewShareRepository(mysqlDB)
 	fileVersionRepo := repositories.NewFileVersionRepository(mysqlDB)

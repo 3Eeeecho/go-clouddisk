@@ -151,7 +151,8 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 	// 2. 数据库操作
 	var finalFile *models.File
 	err = s.tm.WithTransaction(ctx, func(tx *gorm.DB) error {
-		fileRepo := repositories.NewFileRepository(tx, s.deps.Cache)
+		dbFileRepo := repositories.NewDBFileRepository(tx)
+		fileRepo := repositories.NewCachedFileRepository(dbFileRepo, s.deps.Cache)
 		fileVersionRepo := repositories.NewFileVersionRepository(tx)
 
 		// 检查是否存在同名文件的旧版本
