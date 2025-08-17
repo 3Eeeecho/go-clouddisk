@@ -758,23 +758,62 @@ func (r *fileRepository) getFilesFromCacheList(ctx context.Context, listCacheKey
 
 	// 处理管道结果并反序列化
 	var files []models.File
+	var missedIDs []uint64 // 新增：用于存储缓存未命中的文件ID
 	for _, fileID := range fileIDs {
 		cmd := cmds[fileID]
 		fileMap, getErr := cmd.Result()
-		if getErr == nil && len(fileMap) > 0 {
-			// 忽略空值标记的哈希
-			if _, ok := fileMap["__NOT_FOUND__"]; !ok {
-				file, mapErr := mapper.MapToFile(fileMap)
-				if mapErr == nil {
-					files = append(files, *file)
-				} else {
-					logger.Error("Failed to map file hash to struct from cache", zap.Uint64("fileID", fileID), zap.Error(mapErr))
-					// 记录错误但不阻止其他文件被处理
-				}
+
+		// 检查缓存是否命中
+		if getErr == nil && len(fileMap) > 0 && fileMap["__NOT_FOUND__"] == "" {
+			file, mapErr := mapper.MapToFile(fileMap)
+			if mapErr == nil {
+				files = append(files, *file)
+			} else {
+				logger.Error("Failed to map file hash to struct from cache, will fetch from DB", zap.Uint64("fileID", fileID), zap.Error(mapErr))
+				missedIDs = append(missedIDs, fileID) // 映射失败也视为未命中
 			}
-		} else if getErr != nil && getErr != redis.Nil {
-			logger.Error("Error getting file metadata hash for ID", zap.Uint64("fileID", fileID), zap.Error(getErr))
-			// 记录错误但不阻止其他文件被处理
+		} else {
+			// 缓存未命中或获取错误
+			if getErr != nil && getErr != redis.Nil {
+				logger.Error("Error getting file metadata hash for ID, will fetch from DB", zap.Uint64("fileID", fileID), zap.Error(getErr))
+			}
+			missedIDs = append(missedIDs, fileID)
+		}
+	}
+
+	// 如果有缓存未命中的文件，从数据库中批量获取
+	if len(missedIDs) > 0 {
+		logger.Warn("getFilesFromCacheList: Cache inconsistency detected. Some file metadata caches expired while the list cache did not. Fetching from DB.",
+			zap.String("listCacheKey", listCacheKey),
+			zap.Uint64s("missedFileIDs", missedIDs))
+
+		var dbFiles []models.File
+		if err := r.db.Where("id IN ?", missedIDs).Find(&dbFiles).Error; err != nil {
+			logger.Error("getFilesFromCacheList: Failed to fetch missing files from DB", zap.Error(err))
+			// 即使数据库查询失败，也返回已从缓存中获取的部分数据，而不是返回错误
+			// 这样可以最大程度地减少对用户的影响
+		} else {
+			files = append(files, dbFiles...) // 将从数据库中获取的文件追加到结果列表
+
+			// 异步回填缓存
+			go func() {
+				// 使用新的上下文以避免原始请求取消导致 goroutine 提前退出
+				ctx := context.Background()
+				pipe := r.cache.TxPipeline()
+				for _, file := range dbFiles {
+					fileMap, mapErr := mapper.FileToMap(&file)
+					if mapErr != nil {
+						logger.Error("getFilesFromCacheList: (goroutine) Failed to map file for cache write-back", zap.Uint64("fileID", file.ID), zap.Error(mapErr))
+						continue
+					}
+					metaKey := cache.GenerateFileMetadataKey(file.ID)
+					pipe.HMSet(ctx, metaKey, fileMap)
+					pipe.Expire(ctx, metaKey, cache.CacheTTL+time.Duration(rand.Intn(300))*time.Second)
+				}
+				if _, execErr := pipe.Exec(ctx); execErr != nil {
+					logger.Error("getFilesFromCacheList: (goroutine) Failed to execute pipeline for cache write-back", zap.Error(execErr))
+				}
+			}()
 		}
 	}
 

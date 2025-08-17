@@ -60,7 +60,7 @@ func InitRouter(authHandler *handlers.AuthHandler,
 		fileGroup := authenticated.Group("/files")
 		{
 
-			fileGroup.GET("/", fileHandler.ListUserFiles)
+			fileGroup.GET("", fileHandler.ListUserFiles)
 			fileGroup.GET("/:file_id", fileHandler.GetSpecificFile)
 			fileGroup.POST("/folder", fileHandler.CreateFolder)
 			fileGroup.GET("/download/:file_id", fileHandler.DownloadFile)

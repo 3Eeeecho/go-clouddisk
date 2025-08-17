@@ -22,6 +22,7 @@ func StartCacheUpdateConsumer(ctx context.Context, redisClient *redis.Client) {
 	// "0" 表示从 Stream 的开头读取所有消息。
 	streamName := "file_cache_updates"
 	groupName := "file_cache_group"
+	consumerName := "file_cache_consumer_1"
 	redisClient.XGroupCreateMkStream(ctx, streamName, groupName, "0").Result()
 
 	for {
@@ -31,7 +32,7 @@ func StartCacheUpdateConsumer(ctx context.Context, redisClient *redis.Client) {
 		default:
 			streams, err := redisClient.XReadGroup(ctx, &redis.XReadGroupArgs{
 				Group:    groupName,
-				Consumer: "file_cache_consumer_1",
+				Consumer: consumerName,
 				Streams:  []string{streamName, ">"}, // 从未消费的消息开始读
 				Count:    10,                        // 每次批量读取10条
 				Block:    0,                         // 不阻塞
@@ -52,7 +53,7 @@ func StartCacheUpdateConsumer(ctx context.Context, redisClient *redis.Client) {
 							continue
 						}
 						// 成功处理后发送确认，告知 Redis 可以删除这条消息
-						redisClient.XAck(ctx, "file_cache_updates", "file_cache_group", message.ID).Result()
+						redisClient.XAck(ctx, streamName, groupName, message.ID).Result()
 					}
 				}
 			}
