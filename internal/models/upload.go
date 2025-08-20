@@ -6,10 +6,17 @@ type UploadInitRequest struct {
 	FileHash string `json:"file_hash" binding:"required"`
 }
 
+// UploadPartInfo 定义了已上传分片的信息
+type UploadPartInfo struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag"`
+}
+
 // UploadInitResponse 定义了初始化上传的响应体
 type UploadInitResponse struct {
-	FileExists bool   `json:"file_exists"`
-	UploadID   string `json:"upload_id,omitempty"` // 仅在 file_exists 为 false 时返回
+	FileExists    bool             `json:"file_exists"`
+	UploadID      string           `json:"upload_id,omitempty"` // 仅在 file_exists 为 false 时返回
+	UploadedParts []UploadPartInfo `json:"uploaded_parts"`      // 已上传的分片列表
 }
 
 // UploadChunkRequest 定义了上传块的请求体
@@ -30,18 +37,4 @@ type UploadCompleteRequest struct {
 	UploadID       string  `json:"upload_id" binding:"required"`
 	ParentFolderID *uint64 `json:"parent_folder_id"`
 	MimeType       string  `json:"mime_type" binding:"required"`
-}
-
-// ListPartsRequest 定义了查询已上传分块的请求体
-type ListPartsRequest struct {
-	UploadID string `json:"upload_id" binding:"required"`
-	FileHash string `json:"file_hash" binding:"required"`
-	FileName string `json:"file_name" binding:"required"`
-}
-
-// ListPartsResponse 定义了查询已上传分块的响应体
-type ListPartsResponse struct {
-	UploadedParts  []int  `json:"uploaded_parts"`
-	NewUploadID    string `json:"new_upload_id,omitempty"`
-	SessionExpired bool   `json:"session_expired"`
 }

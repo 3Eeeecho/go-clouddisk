@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 	"github.com/3Eeeecho/go-clouddisk/internal/models"
@@ -20,21 +21,10 @@ import (
 	"gorm.io/gorm"
 )
 
-// MergeTask 定义合并任务的消息体
-// type MergeTask struct {
-// 	FileID         uint64
-// 	FileHash       string  `json:"file_hash"`
-// 	FileName       string  `json:"file_name"`
-// 	TotalChunks    int     `json:"total_chunks"`
-// 	UserID         uint64  `json:"user_id"`
-// 	ParentFolderID *uint64 `json:"parent_folder_id,omitempty"` // 用于记录文件归属
-// }
-
 type UploadService interface {
 	UploadInit(ctx context.Context, userID uint64, req *models.UploadInitRequest) (*models.UploadInitResponse, error)
 	UploadChunk(ctx context.Context, userID uint64, req *models.UploadChunkRequest, chunkData io.Reader) error
 	UploadComplete(ctx context.Context, userID uint64, req *models.UploadCompleteRequest) (*models.File, error)
-	ListUploadedParts(ctx context.Context, req *models.ListPartsRequest) (*models.ListPartsResponse, error)
 }
 
 type UploadServiceDeps struct {
@@ -67,25 +57,86 @@ func NewUploadService(
 	}
 }
 
-// UploadInit 分片上传初始化,查询是否存在已上传的文件切片或者完整的文件
+// UploadInit 处理分片上传的初始化。
+// 它通过检查 Redis 中是否存在上传会话来支持断点续传。
 func (s *uploadService) UploadInit(ctx context.Context, userID uint64, req *models.UploadInitRequest) (*models.UploadInitResponse, error) {
-	// 根据用户反馈，移除秒传逻辑，总是初始化一个新的上传会话。
-	// 版本控制的逻辑完全由 UploadComplete 处理。
+	// 注意：根据之前的要求，检查完整文件是否存在（秒传）的逻辑已被移除。
+	// 版本控制完全由 UploadComplete 处理。
+
 	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
 	bucketName := s.deps.Config.MinIO.BucketName
+	redisKey := fmt.Sprintf("uploadid:%s", req.FileHash)
 
-	uploadID, err := s.storage.InitMultiPartUpload(ctx, bucketName, objectName, storage.PutObjectOptions{
+	// 1. 尝试从 Redis 获取已存在的 uploadID
+	var uploadID string
+	err := s.deps.Cache.Get(ctx, redisKey, &uploadID)
+	if err == nil && uploadID != "" {
+		// 2. 如果 uploadID 存在，则检查其在 MinIO 中的状态
+		parts, err := s.storage.ListObjectParts(ctx, bucketName, objectName, uploadID)
+		if err != nil {
+			if s.storage.IsUploadIDNotFound(err) {
+				// MinIO 中的会话已过期或被中止。开启一个新的会话。
+				logger.Warn("UploadInit: 在 Redis 中找到 UploadID 但在存储中未找到，正在重新初始化。", zap.String("uploadID", uploadID))
+				return s.startNewUploadSession(ctx, bucketName, objectName, redisKey)
+			}
+			logger.Error("UploadInit: 为已存在的 UploadID 列出分片失败", zap.Error(err), zap.String("uploadID", uploadID))
+			return nil, fmt.Errorf("upload service: failed to list parts: %w", err)
+		}
+
+		// 会话有效，返回现有状态
+		logger.Info("UploadInit: 正在恢复已存在的上传会话", zap.String("uploadID", uploadID), zap.Int("partCount", len(parts)))
+		return &models.UploadInitResponse{
+			FileExists:    false,
+			UploadID:      uploadID,
+			UploadedParts: convertToModelParts(parts),
+		}, nil
+	}
+
+	// 3. 如果 Redis 中没有 uploadID 或 Redis 返回错误（例如 redis.Nil），则启动一个新会话。
+	if err != cache.ErrCacheMiss && err != nil {
+		logger.Error("UploadInit: 从 Redis 获取 uploadID 失败，继续执行新会话", zap.Error(err))
+	}
+
+	return s.startNewUploadSession(ctx, bucketName, objectName, redisKey)
+}
+
+// startNewUploadSession 在存储中初始化一个新的分片上传并将该会话保存到 Redis。
+func (s *uploadService) startNewUploadSession(ctx context.Context, bucketName, objectName, redisKey string) (*models.UploadInitResponse, error) {
+	newUploadID, err := s.storage.InitMultiPartUpload(ctx, bucketName, objectName, storage.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
 	if err != nil {
-		logger.Error("UploadInit: Failed to init multipart upload", zap.Error(err))
+		logger.Error("startNewUploadSession: 初始化分片上传失败", zap.Error(err))
 		return nil, fmt.Errorf("upload service: failed to init multipart upload: %w", err)
 	}
 
+	// 将新的 uploadID 存储在 Redis 中，有效期为 24 小时
+	err = s.deps.Cache.Set(ctx, redisKey, newUploadID, 24*time.Hour) // 24 小时
+	if err != nil {
+		// 如果无法保存到 Redis，我们应该中止 MinIO 上传以避免孤儿上传。
+		logger.Error("startNewUploadSession: 无法将新的 uploadID 保存到 Redis", zap.Error(err), zap.String("uploadID", newUploadID))
+		_ = s.storage.AbortMultiPartUpload(ctx, bucketName, objectName, newUploadID)
+		return nil, fmt.Errorf("upload service: failed to save session: %w", err)
+	}
+
+	logger.Info("startNewUploadSession: 已启动新的上传会话", zap.String("uploadID", newUploadID))
 	return &models.UploadInitResponse{
-		FileExists: false, // 因为取消了秒传，所以这里总是 false
-		UploadID:   uploadID,
+		FileExists:    false,
+		UploadID:      newUploadID,
+		UploadedParts: []models.UploadPartInfo{},
 	}, nil
+}
+
+// convertToModelParts 将存储分片信息转换为模型分片信息。
+func convertToModelParts(storageParts []storage.UploadPartResult) []models.UploadPartInfo {
+	modelParts := make([]models.UploadPartInfo, len(storageParts))
+	for i, p := range storageParts {
+		modelParts[i] = models.UploadPartInfo{
+			PartNumber: p.PartNumber,
+			ETag:       p.ETag,
+		}
+	}
+	return modelParts
 }
 
 // UploadChunk 处理分片上传
@@ -253,67 +304,6 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 
 	logger.Info("Upload complete and versioning handled", zap.Uint64("fileID", finalFile.ID))
 	return finalFile, nil
-}
-
-func (s *uploadService) ListUploadedParts(ctx context.Context, req *models.ListPartsRequest) (*models.ListPartsResponse, error) {
-	redisKey := generatePartKey(req.UploadID)
-	partsMap, err := s.deps.Cache.HGetAll(ctx, redisKey)
-	if err == nil && len(partsMap) > 0 {
-		// 缓存命中，直接返回
-		var uploadedParts []int
-		for partNumberStr := range partsMap {
-			partNumber, _ := strconv.Atoi(partNumberStr)
-			uploadedParts = append(uploadedParts, partNumber)
-		}
-		sort.Ints(uploadedParts)
-		return &models.ListPartsResponse{UploadedParts: uploadedParts}, nil
-	}
-
-	// 缓存未命中或为空，回源到 MinIO
-	logger.Info("ListUploadedParts: Cache miss, fetching from storage", zap.String("uploadID", req.UploadID))
-	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
-	bucketName := s.deps.Config.MinIO.BucketName
-	storageParts, err := s.storage.ListObjectParts(ctx, bucketName, objectName, req.UploadID)
-	if err != nil {
-		// 检查是否是 "uploadID not found" 类型的错误
-		if s.storage.IsUploadIDNotFound(err) {
-			logger.Warn("ListUploadedParts: Upload session not found in storage, re-initializing.", zap.String("uploadID", req.UploadID))
-
-			// 重新初始化一个新的分片上传
-			newUploadID, initErr := s.storage.InitMultiPartUpload(ctx, bucketName, objectName, storage.PutObjectOptions{
-				ContentType: "application/octet-stream",
-			})
-			if initErr != nil {
-				logger.Error("ListUploadedParts: Failed to re-initialize multipart upload", zap.Error(initErr))
-				return nil, fmt.Errorf("upload service: failed to re-initialize multipart upload: %w", initErr)
-			}
-
-			// 返回新的 UploadID 和空的分片列表，并携带一个特殊标志
-			return &models.ListPartsResponse{
-				UploadedParts:  []int{},
-				NewUploadID:    newUploadID, // 客户端需要使用这个新的ID
-				SessionExpired: true,
-			}, nil
-		}
-
-		logger.Error("ListUploadedParts: Failed to list parts from storage", zap.Error(err), zap.String("uploadID", req.UploadID))
-		return nil, fmt.Errorf("upload service: failed to list parts from storage: %w", err)
-	}
-
-	// 回填缓存并返回结果
-	var uploadedParts []int
-	pipe := s.deps.Cache.TxPipeline()
-	for _, part := range storageParts {
-		uploadedParts = append(uploadedParts, part.PartNumber)
-		pipe.HSet(ctx, redisKey, fmt.Sprintf("%d", part.PartNumber), part.ETag)
-	}
-	if _, err := pipe.Exec(ctx); err != nil {
-		logger.Error("ListUploadedParts: Failed to backfill cache", zap.Error(err), zap.String("uploadID", req.UploadID))
-		// 即使缓存回填失败，也应该返回从存储中获取的正确结果
-	}
-
-	sort.Ints(uploadedParts)
-	return &models.ListPartsResponse{UploadedParts: uploadedParts}, nil
 }
 
 func generatePartKey(uploadID string) string {

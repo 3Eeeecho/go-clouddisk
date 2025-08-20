@@ -33,7 +33,7 @@ type RegisterRequest struct {
 
 // LoginRequest 登录请求结构体
 type LoginRequest struct {
-	Identifier string `json:"identifier" binding:"required"` // 可以是用户名或邮箱
+	Identifier string `json:"username" binding:"required"` // 可以是用户名或邮箱
 	Password   string `json:"password" binding:"required"`
 }
 

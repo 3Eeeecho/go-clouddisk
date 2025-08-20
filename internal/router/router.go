@@ -25,9 +25,8 @@ func InitRouter(authHandler *handlers.AuthHandler,
 
 	router := gin.Default() // 使用默认的 Gin 引擎，包含 Logger 和 Recovery 中间件
 
-	// 全局中间件
-	// TODO: CORS 跨域处理 (如果需要前端分离)
-	// router.Use(middlewares.Cors())
+	// 全局中间件 CORS 跨域处理 (前端分离)
+	router.Use(middlewares.Cors())
 
 	// Health Check 路由
 	router.GET("/ping", func(c *gin.Context) {
@@ -97,7 +96,6 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			uploadRoutes.POST("/init", uploadHandler.InitUploadHandler)
 			uploadRoutes.POST("/chunk", uploadHandler.UploadChunkHandler)
 			uploadRoutes.POST("/complete", uploadHandler.CompleteUploadHandler)
-			uploadRoutes.POST("/parts", uploadHandler.ListPartsHandler)
 		}
 	}
 

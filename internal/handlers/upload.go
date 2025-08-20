@@ -164,31 +164,3 @@ func (h *UploadHandler) CompleteUploadHandler(c *gin.Context) {
 
 	response.Success(c, http.StatusOK, "File uploaded and merged successfully", newFile)
 }
-
-// ListPartsHandler 处理查询已上传分块的请求
-// @Summary 查询已上传的分块
-// @Description 根据 upload_id 查询已经成功上传的分块列表
-// @Tags 文件上传
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param request body models.ListPartsRequest true "查询参数"
-// @Success 200 {object} models.ListPartsResponse "查询成功"
-// @Failure 400 {object} xerr.Response "参数错误"
-// @Failure 500 {object} xerr.Response "内部服务器错误"
-// @Router /api/v1/uploads/parts [post]
-func (h *UploadHandler) ListPartsHandler(c *gin.Context) {
-	var req models.ListPartsRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.Error(c, http.StatusBadRequest, xerr.InvalidParamsCode, "Invalid request body")
-		return
-	}
-
-	resp, err := h.uploadService.ListUploadedParts(c, &req)
-	if err != nil {
-		response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to list uploaded parts")
-		return
-	}
-
-	response.Success(c, http.StatusOK, "Successfully listed uploaded parts", resp)
-}
