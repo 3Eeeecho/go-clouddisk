@@ -33,6 +33,7 @@ type FileService interface {
 
 	// 文件下载
 	Download(ctx context.Context, userID uint64, fileID uint64) (*models.File, io.ReadCloser, error)
+	GetPresignedURLForDownload(ctx context.Context, userID uint64, fileID uint64) (string, error)
 
 	// 文件删除
 	SoftDelete(userID uint64, fileID uint64) error
@@ -524,4 +525,41 @@ func (s *fileService) RestoreFileVersion(userID uint64, fileID uint64, versionID
 	logger.Info("RestoreFileVersion: Successfully restored file version", zap.Uint64("fileID", fileID), zap.String("versionID", versionID))
 	return nil
 
+}
+
+func (s *fileService) GetPresignedURLForDownload(ctx context.Context, userID uint64, fileID uint64) (string, error) {
+	// 1. 验证文件是否存在且用户有权访问
+	file, err := s.domainService.CheckFile(userID, fileID)
+	if err != nil {
+		return "", err // 错误已在 domainService 中包裹
+	}
+
+	// 2. 检查文件是否为文件夹，文件夹不支持生成预签名URL
+	if file.IsFolder == 1 {
+		return "", fmt.Errorf("file service: %w", xerr.ErrTargetNotFolder)
+	}
+
+	// 3. 检查 OssKey 是否存在
+	if file.OssKey == nil || *file.OssKey == "" {
+		logger.Error("GetPresignedURLForDownload: File record has no OssKey", zap.Uint64("fileID", file.ID))
+		return "", fmt.Errorf("file service: %w", xerr.ErrStorageError)
+	}
+
+	// 4. 从配置中获取预签名URL的有效期
+	expiry := time.Duration(s.cfg.Storage.PresignedURLExpiry) * time.Minute
+
+	// 5. 调用存储服务生成预签名URL
+	presignedURL, err := s.StorageService.GeneratePresignedURL(ctx, *file.OssBucket, *file.OssKey, *file.VersionID, expiry)
+	if err != nil {
+		logger.Error("GetPresignedURLForDownload: Failed to generate presigned URL",
+			zap.Uint64("fileID", file.ID),
+			zap.Error(err))
+		return "", fmt.Errorf("file service: failed to generate presigned URL: %w", xerr.ErrStorageError)
+	}
+
+	logger.Info("GetPresignedURLForDownload: Successfully generated presigned URL",
+		zap.Uint64("fileID", fileID),
+		zap.Uint64("userID", userID))
+
+	return presignedURL, nil
 }

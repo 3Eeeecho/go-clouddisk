@@ -36,6 +36,8 @@ type UploadServiceDeps struct {
 type uploadService struct {
 	fileRepo        repositories.FileRepository
 	fileVersionRepo repositories.FileVersionRepository
+	uploadRepo      repositories.MultipartUploadRepository
+	domainService   FileDomainService
 	tm              TransactionManager
 	storage         storage.StorageService
 	deps            UploadServiceDeps
@@ -44,6 +46,8 @@ type uploadService struct {
 func NewUploadService(
 	fileRepo repositories.FileRepository,
 	fileVersionRepo repositories.FileVersionRepository,
+	uploadRepo repositories.MultipartUploadRepository,
+	domainService FileDomainService,
 	tm TransactionManager,
 	ss storage.StorageService,
 	deps UploadServiceDeps,
@@ -51,6 +55,8 @@ func NewUploadService(
 	return &uploadService{
 		fileRepo:        fileRepo,
 		fileVersionRepo: fileVersionRepo,
+		uploadRepo:      uploadRepo,
+		domainService:   domainService,
 		tm:              tm,
 		storage:         ss,
 		deps:            deps,
@@ -58,50 +64,46 @@ func NewUploadService(
 }
 
 // UploadInit 处理分片上传的初始化。
-// 它通过检查 Redis 中是否存在上传会话来支持断点续传。
+// 它通过首先检查数据库，然后检查 Redis 缓存来支持断点续传。
 func (s *uploadService) UploadInit(ctx context.Context, userID uint64, req *models.UploadInitRequest) (*models.UploadInitResponse, error) {
-	// 注意：根据之前的要求，检查完整文件是否存在（秒传）的逻辑已被移除。
-	// 版本控制完全由 UploadComplete 处理。
-
 	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
 	bucketName := s.deps.Config.MinIO.BucketName
-	redisKey := fmt.Sprintf("uploadid:%s", req.FileHash)
 
-	// 1. 尝试从 Redis 获取已存在的 uploadID
-	var uploadID string
-	err := s.deps.Cache.Get(ctx, redisKey, &uploadID)
-	if err == nil && uploadID != "" {
-		// 2. 如果 uploadID 存在，则检查其在 MinIO 中的状态
-		parts, err := s.storage.ListObjectParts(ctx, bucketName, objectName, uploadID)
+	// 1. 尝试从数据库获取正在进行的上传任务
+	uploadTask, err := s.uploadRepo.FindByFileHash(req.FileHash, userID)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		logger.Error("UploadInit: 从数据库获取上传任务失败", zap.Error(err), zap.String("fileHash", req.FileHash))
+		return nil, fmt.Errorf("upload service: failed to get upload task from db: %w", err)
+	}
+
+	// 2. 如果数据库中存在任务，则恢复会话
+	if uploadTask != nil {
+		parts, err := s.storage.ListObjectParts(ctx, bucketName, objectName, uploadTask.UploadID)
 		if err != nil {
 			if s.storage.IsUploadIDNotFound(err) {
 				// MinIO 中的会话已过期或被中止。开启一个新的会话。
-				logger.Warn("UploadInit: 在 Redis 中找到 UploadID 但在存储中未找到，正在重新初始化。", zap.String("uploadID", uploadID))
-				return s.startNewUploadSession(ctx, bucketName, objectName, redisKey)
+				logger.Warn("UploadInit: 在 DB 中找到 UploadID 但在存储中未找到，正在重新初始化。", zap.String("uploadID", uploadTask.UploadID))
+				return s.startNewUploadSession(ctx, userID, req, bucketName, objectName)
 			}
-			logger.Error("UploadInit: 为已存在的 UploadID 列出分片失败", zap.Error(err), zap.String("uploadID", uploadID))
+			logger.Error("UploadInit: 为已存在的 UploadID 列出分片失败", zap.Error(err), zap.String("uploadID", uploadTask.UploadID))
 			return nil, fmt.Errorf("upload service: failed to list parts: %w", err)
 		}
 
 		// 会话有效，返回现有状态
-		logger.Info("UploadInit: 正在恢复已存在的上传会话", zap.String("uploadID", uploadID), zap.Int("partCount", len(parts)))
+		logger.Info("UploadInit: 正在恢复已存在的上传会话", zap.String("uploadID", uploadTask.UploadID), zap.Int("partCount", len(parts)))
 		return &models.UploadInitResponse{
 			FileExists:    false,
-			UploadID:      uploadID,
+			UploadID:      uploadTask.UploadID,
 			UploadedParts: convertToModelParts(parts),
 		}, nil
 	}
 
-	// 3. 如果 Redis 中没有 uploadID 或 Redis 返回错误（例如 redis.Nil），则启动一个新会话。
-	if err != cache.ErrCacheMiss && err != nil {
-		logger.Error("UploadInit: 从 Redis 获取 uploadID 失败，继续执行新会话", zap.Error(err))
-	}
-
-	return s.startNewUploadSession(ctx, bucketName, objectName, redisKey)
+	// 3. 如果数据库中没有任务，则启动一个新会话
+	return s.startNewUploadSession(ctx, userID, req, bucketName, objectName)
 }
 
-// startNewUploadSession 在存储中初始化一个新的分片上传并将该会话保存到 Redis。
-func (s *uploadService) startNewUploadSession(ctx context.Context, bucketName, objectName, redisKey string) (*models.UploadInitResponse, error) {
+// startNewUploadSession 在存储中初始化一个新的分片上传并将该会话保存到数据库和 Redis。
+func (s *uploadService) startNewUploadSession(ctx context.Context, userID uint64, req *models.UploadInitRequest, bucketName, objectName string) (*models.UploadInitResponse, error) {
 	newUploadID, err := s.storage.InitMultiPartUpload(ctx, bucketName, objectName, storage.PutObjectOptions{
 		ContentType: "application/octet-stream",
 	})
@@ -110,13 +112,25 @@ func (s *uploadService) startNewUploadSession(ctx context.Context, bucketName, o
 		return nil, fmt.Errorf("upload service: failed to init multipart upload: %w", err)
 	}
 
-	// 将新的 uploadID 存储在 Redis 中，有效期为 24 小时
-	err = s.deps.Cache.Set(ctx, redisKey, newUploadID, 24*time.Hour) // 24 小时
-	if err != nil {
-		// 如果无法保存到 Redis，我们应该中止 MinIO 上传以避免孤儿上传。
-		logger.Error("startNewUploadSession: 无法将新的 uploadID 保存到 Redis", zap.Error(err), zap.String("uploadID", newUploadID))
-		_ = s.storage.AbortMultiPartUpload(ctx, bucketName, objectName, newUploadID)
-		return nil, fmt.Errorf("upload service: failed to save session: %w", err)
+	// 将新的上传任务持久化到数据库
+	uploadTask := &models.MultipartUpload{
+		FileHash:   req.FileHash,
+		UploadID:   newUploadID,
+		ObjectName: objectName,
+		UserID:     userID,
+		Status:     "in_progress",
+	}
+	if err := s.uploadRepo.Create(uploadTask); err != nil {
+		logger.Error("startNewUploadSession: 无法将新的 uploadID 保存到数据库", zap.Error(err), zap.String("uploadID", newUploadID))
+		_ = s.storage.AbortMultiPartUpload(ctx, bucketName, objectName, newUploadID) // 回滚 MinIO 操作
+		return nil, fmt.Errorf("upload service: failed to save session to db: %w", err)
+	}
+
+	// 将新的 uploadID 缓存到 Redis 中，有效期为 24 小时
+	redisKey := fmt.Sprintf("uploadid:%s", req.FileHash)
+	if err := s.deps.Cache.Set(ctx, redisKey, newUploadID, 24*time.Hour); err != nil {
+		// 缓存失败是次要问题，记录日志但不中止上传，因为状态已持久化到数据库
+		logger.Warn("startNewUploadSession: 无法将新的 uploadID 缓存到 Redis", zap.Error(err), zap.String("uploadID", newUploadID))
 	}
 
 	logger.Info("startNewUploadSession: 已启动新的上传会话", zap.String("uploadID", newUploadID))
@@ -141,6 +155,7 @@ func convertToModelParts(storageParts []storage.UploadPartResult) []models.Uploa
 
 // UploadChunk 处理分片上传
 func (s *uploadService) UploadChunk(ctx context.Context, userID uint64, req *models.UploadChunkRequest, chunkData io.Reader) error {
+	//TODO 分片上传策略,大中小文件
 	objectName := s.storage.GetUploadObjName(req.FileHash, req.FileName)
 	bucketName := s.deps.Config.MinIO.BucketName
 
@@ -192,12 +207,27 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 	putResult, err := s.storage.CompleteMultiPartUpload(ctx, bucketName, objectName, req.UploadID, parts)
 	if err != nil {
 		logger.Error("UploadComplete: Failed to complete multipart upload", zap.Error(err), zap.String("uploadID", req.UploadID))
+		// 尝试中止 MinIO 上传并更新数据库状态
 		_ = s.storage.AbortMultiPartUpload(ctx, bucketName, objectName, req.UploadID)
+		if err := s.uploadRepo.UpdateStatus(req.UploadID, "aborted"); err != nil {
+			logger.Error("UploadComplete: Failed to update upload task status to aborted", zap.Error(err), zap.String("uploadID", req.UploadID))
+		}
 		return nil, fmt.Errorf("upload service: failed to complete multipart upload: %w", err)
 	}
+
+	// 更新数据库中的任务状态
+	if err := s.uploadRepo.UpdateStatus(req.UploadID, "completed"); err != nil {
+		// 主要流程已成功，这里只记录错误
+		logger.Error("UploadComplete: Failed to update upload task status to completed", zap.Error(err), zap.String("uploadID", req.UploadID))
+	}
+
 	// 清理 Redis 中的缓存
 	logger.Info("UploadComplete: Clearing redis cache for completed upload", zap.String("uploadID", req.UploadID))
-	defer s.deps.Cache.Del(ctx, redisKey)
+	defer func() {
+		_ = s.deps.Cache.Del(ctx, redisKey)
+		redisUploadIDKey := fmt.Sprintf("uploadid:%s", req.FileHash)
+		_ = s.deps.Cache.Del(ctx, redisUploadIDKey)
+	}()
 
 	// 2. 数据库操作
 	var finalFile *models.File
@@ -212,86 +242,65 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 			return fmt.Errorf("failed to check for existing file: %w", err)
 		}
 
+		// 如果用户未指定模式，则默认为创建版本
+		if req.UploadMode == "" {
+			req.UploadMode = "version"
+		}
+
 		if existingFile != nil && err == nil {
-			// --- 创建新版本 ---
-			latestVersion, err := fileVersionRepo.FindLatestVersion(existingFile.ID)
-			if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
-				return fmt.Errorf("failed to find latest version: %w", err)
-			}
-
-			newVersionNumber := 1
-			if latestVersion != nil {
-				newVersionNumber = int(latestVersion.Version) + 1
-			}
-
-			// 添加新版本记录
-			logger.Info("putResult.Size", zap.Uint64("putResult.Size", uint64(putResult.Size)))
-			newVersion := &models.FileVersion{
-				FileID:    existingFile.ID,
-				Version:   uint(newVersionNumber),
-				Size:      uint64(putResult.Size),
-				OssKey:    putResult.Key,
-				VersionID: putResult.VersionID,
-				MD5Hash:   req.FileHash,
-			}
-			if err := fileVersionRepo.Create(newVersion); err != nil {
-				return fmt.Errorf("failed to create new file version: %w", err)
-			}
-
-			// 更新主文件记录
-			existingFile.Size = uint64(putResult.Size)
-			existingFile.MD5Hash = &req.FileHash
-			existingFile.OssKey = &putResult.Key
-			existingFile.MimeType = &req.MimeType
-			existingFile.VersionID = &putResult.VersionID
-			if err := fileRepo.Update(existingFile); err != nil {
-				return fmt.Errorf("failed to update main file record: %w", err)
-			}
-			finalFile = existingFile
-		} else {
-			// --- 创建新文件 ---
-			var parentPath = "/"
-			if req.ParentFolderID != nil {
-				parent, err := fileRepo.FindByID(*req.ParentFolderID)
-				if err != nil {
-					return fmt.Errorf("failed to find parent folder: %w", err)
+			// --- 文件已存在，根据模式处理 ---
+			if req.UploadMode == "version" {
+				// --- 创建新版本 ---
+				latestVersion, err := fileVersionRepo.FindLatestVersion(existingFile.ID)
+				if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+					return fmt.Errorf("failed to find latest version: %w", err)
 				}
-				parentPath = parent.Path + parent.FileName + "/"
-			}
 
-			newFile := &models.File{
-				UserID:         userID,
-				UUID:           uuid.NewString(),
-				FileName:       req.FileName,
-				ParentFolderID: req.ParentFolderID,
-				Path:           parentPath,
-				IsFolder:       0,
-				MimeType:       &req.MimeType,
-				VersionID:      &putResult.VersionID,
-				MD5Hash:        &req.FileHash,
-				Status:         models.StatusNormal,
-				Size:           uint64(putResult.Size),
-				OssKey:         &putResult.Key,
-				OssBucket:      &bucketName,
-			}
-			// 1. 先创建主文件记录
-			if err := fileRepo.Create(newFile); err != nil {
-				return fmt.Errorf("failed to create new file: %w", err)
-			}
+				newVersionNumber := 1
+				if latestVersion != nil {
+					newVersionNumber = int(latestVersion.Version) + 1
+				}
 
-			fmt.Println("fileID", newFile.ID)
+				newVersion := &models.FileVersion{
+					FileID:    existingFile.ID,
+					Version:   uint(newVersionNumber),
+					Size:      uint64(putResult.Size),
+					OssKey:    putResult.Key,
+					VersionID: putResult.VersionID,
+					MD5Hash:   req.FileHash,
+				}
+				if err := fileVersionRepo.Create(newVersion); err != nil {
+					return fmt.Errorf("failed to create new file version: %w", err)
+				}
 
-			// 2. 为新文件创建第一个版本记录
-			firstVersion := &models.FileVersion{
-				FileID:    newFile.ID,
-				Version:   1,
-				Size:      uint64(putResult.Size),
-				OssKey:    putResult.Key,
-				VersionID: putResult.VersionID,
-				MD5Hash:   req.FileHash,
+				// 更新主文件记录以指向最新版本
+				existingFile.Size = uint64(putResult.Size)
+				existingFile.MD5Hash = &req.FileHash
+				existingFile.OssKey = &putResult.Key
+				existingFile.MimeType = &req.MimeType
+				existingFile.VersionID = &putResult.VersionID
+				if err := fileRepo.Update(existingFile); err != nil {
+					return fmt.Errorf("failed to update main file record: %w", err)
+				}
+				finalFile = existingFile
+
+			} else { // req.UploadMode == "rename"
+				// --- 重命名并创建为新文件 ---
+				finalFileName, err := s.domainService.ResolveFileNameConflict(userID, req.ParentFolderID, req.FileName, 0, 0) // isFolder = 0
+				if err != nil {
+					return err
+				}
+				newFile, err := s.createNewFileWithInitialVersion(fileRepo, fileVersionRepo, userID, req, &putResult, &bucketName, finalFileName)
+				if err != nil {
+					return err
+				}
+				finalFile = newFile
 			}
-			if err := fileVersionRepo.Create(firstVersion); err != nil {
-				return fmt.Errorf("failed to create first file version: %w", err)
+		} else {
+			// --- 文件不存在，创建新文件 ---
+			newFile, err := s.createNewFileWithInitialVersion(fileRepo, fileVersionRepo, userID, req, &putResult, &bucketName, req.FileName)
+			if err != nil {
+				return err
 			}
 			finalFile = newFile
 		}
@@ -308,4 +317,60 @@ func (s *uploadService) UploadComplete(ctx context.Context, userID uint64, req *
 
 func generatePartKey(uploadID string) string {
 	return fmt.Sprintf("upload:%s:parts", uploadID)
+}
+
+// createNewFileWithInitialVersion 封装了创建新文件及其初始版本记录的逻辑
+func (s *uploadService) createNewFileWithInitialVersion(
+	fileRepo repositories.FileRepository,
+	fileVersionRepo repositories.FileVersionRepository,
+	userID uint64,
+	req *models.UploadCompleteRequest,
+	putResult *storage.PutObjectResult,
+	bucketName *string,
+	fileName string,
+) (*models.File, error) {
+	var parentPath = "/"
+	if req.ParentFolderID != nil {
+		parent, err := fileRepo.FindByID(*req.ParentFolderID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find parent folder: %w", err)
+		}
+		parentPath = parent.Path + parent.FileName + "/"
+	}
+
+	newFile := &models.File{
+		UserID:         userID,
+		UUID:           uuid.NewString(),
+		FileName:       fileName,
+		ParentFolderID: req.ParentFolderID,
+		Path:           parentPath,
+		IsFolder:       0,
+		MimeType:       &req.MimeType,
+		VersionID:      &putResult.VersionID,
+		MD5Hash:        &req.FileHash,
+		Status:         models.StatusNormal,
+		Size:           uint64(putResult.Size),
+		OssKey:         &putResult.Key,
+		OssBucket:      bucketName,
+	}
+
+	// 1. 创建主文件记录
+	if err := fileRepo.Create(newFile); err != nil {
+		return nil, fmt.Errorf("failed to create new file: %w", err)
+	}
+
+	// 2. 为新文件创建第一个版本记录
+	firstVersion := &models.FileVersion{
+		FileID:    newFile.ID,
+		Version:   1,
+		Size:      uint64(putResult.Size),
+		OssKey:    putResult.Key,
+		VersionID: putResult.VersionID,
+		MD5Hash:   req.FileHash,
+	}
+	if err := fileVersionRepo.Create(firstVersion); err != nil {
+		return nil, fmt.Errorf("failed to create first file version: %w", err)
+	}
+
+	return newFile, nil
 }

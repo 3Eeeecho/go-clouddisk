@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"time"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
 )
@@ -24,6 +25,8 @@ type StorageService interface {
 	MakeBucket(ctx context.Context, bucketName string) error
 	// 获取对象的公开访问URL（如果支持）
 	GetObjectURL(bucketName, objectName string) string
+	// GeneratePresignedURL 为下载生成预签名URL
+	GeneratePresignedURL(ctx context.Context, bucketName, objectName, versionID string, expiry time.Duration) (string, error)
 
 	// --- 分块上传方法 ---
 

@@ -70,8 +70,9 @@ type JWTConfig struct {
 }
 
 type StorageConfig struct {
-	LocalBasePath string `mapstructure:"local_base_path"`
-	Type          string `mapstructure:"type"`
+	LocalBasePath      string `mapstructure:"local_base_path"`
+	Type               string `mapstructure:"type"`
+	PresignedURLExpiry int    `mapstructure:"presigned_url_expiry"` // 预签名URL有效期（分钟）
 }
 
 // zap日志配置

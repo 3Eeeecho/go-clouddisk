@@ -142,8 +142,8 @@ func (r *dbFileRepository) SoftDelete(id uint64) error {
 	return r.db.Delete(&models.File{}, id).Error
 }
 
-func (r *dbFileRepository) PermanentDelete(fileID uint64) error {
-	err := r.db.Unscoped().Delete(&models.File{}, fileID).Error
+func (r *dbFileRepository) PermanentDelete(tx *gorm.DB, fileID uint64) error {
+	err := tx.Unscoped().Delete(&models.File{}, fileID).Error
 	if err != nil {
 		return fmt.Errorf("failed to permanently delete file: %w", err)
 	}

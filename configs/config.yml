@@ -35,6 +35,7 @@ jwt:
 storageconfig:
   local_base_path: "./uploads/data"
   type: "minio"
+  presigned_url_expiry: 10 # 预签名URL有效期（分钟），默认为10分钟
 
 log:
   output_path: "logs/app.log"

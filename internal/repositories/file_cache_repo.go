@@ -17,6 +17,7 @@ import (
 	"github.com/3Eeeecho/go-clouddisk/internal/pkg/xerr"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 type cachedFileRepository struct {
@@ -313,7 +314,7 @@ func (r *cachedFileRepository) SoftDelete(id uint64) error {
 	return nil
 }
 
-func (r *cachedFileRepository) PermanentDelete(fileID uint64) error {
+func (r *cachedFileRepository) PermanentDelete(tx *gorm.DB, fileID uint64) error {
 	file, err := r.FindByID(fileID)
 	if err != nil {
 		return err
@@ -322,7 +323,7 @@ func (r *cachedFileRepository) PermanentDelete(fileID uint64) error {
 		return xerr.ErrFileNotFound
 	}
 
-	if err := r.next.PermanentDelete(fileID); err != nil {
+	if err := r.next.PermanentDelete(tx, fileID); err != nil {
 		return err
 	}
 

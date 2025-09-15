@@ -101,7 +101,7 @@ func (w *DeleteWorker) DeleteSpecificVersion(msg amqp.Delivery) {
 
 		// 3. 如果是最后一个版本，删除主记录
 		if remainingVersions == 0 {
-			if err := tx.WithContext(ctx).Unscoped().Delete(&models.File{}, task.FileID).Error; err != nil {
+			if err := w.fileRepo.PermanentDelete(tx, task.FileID); err != nil {
 				return fmt.Errorf("failed to delete file: %w", err)
 			}
 			logger.Info("Last version deleted, removing main file record", zap.Uint64("FileID", task.FileID))
@@ -147,14 +147,8 @@ func (w *DeleteWorker) DeleteAllVersions(msg amqp.Delivery) {
 		}
 
 		// 2. 再删除主文件记录（父表）
-		result := tx.WithContext(ctx).Unscoped().Delete(&models.File{}, task.FileID)
-		if result.Error != nil {
-			return fmt.Errorf("failed to delete file: %w", result.Error)
-		}
-
-		// 检查是否真的删除了文件记录
-		if result.RowsAffected == 0 {
-			return xerr.ErrFileNotFound
+		if err := w.fileRepo.PermanentDelete(tx, task.FileID); err != nil {
+			return fmt.Errorf("failed to delete file: %w", err)
 		}
 
 		return nil

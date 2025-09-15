@@ -210,46 +210,39 @@ func (h *ShareHandler) DownloadSharedContent(c *gin.Context) {
 		return
 	}
 
-	var reader io.ReadCloser
-	var fileName string
-	var contentType string
-	var fileSize int64
-
-	if share.File.IsFolder == 0 { // 是文件
-		reader, err = h.shareService.GetSharedFileContent(c.Request.Context(), share)
-		if err != nil {
-			logger.Error("DownloadSharedContent: 获取分享文件内容失败", zap.String("uuid", shareUUID), zap.Error(err))
-			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "获取分享文件内容失败")
-			return
-		}
-		fileName = share.File.FileName
-		contentType = *share.File.MimeType
-		fileSize = int64(share.File.Size)
-	} else { // 是文件夹
-		reader, err = h.shareService.GetSharedFolderContent(c.Request.Context(), share)
+	// 如果是文件夹，保持服务器端压缩并流式传输
+	if share.File.IsFolder == 1 {
+		reader, err := h.shareService.GetSharedFolderContent(c.Request.Context(), share)
 		if err != nil {
 			logger.Error("DownloadSharedContent: 打包分享文件夹内容失败", zap.String("uuid", shareUUID), zap.Error(err))
 			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "打包分享文件夹内容失败")
 			return
 		}
-		fileName = fmt.Sprintf("%s.zip", share.File.FileName)
-		contentType = "application/zip"
-		fileSize = 0
-	}
-	defer reader.Close()
+		defer reader.Close()
 
-	encodedFileName := url.PathEscape(fileName)
-	contentDisposition := fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, encodedFileName, encodedFileName)
-	c.Header("Content-Disposition", contentDisposition)
-	c.Header("Content-Type", contentType)
-	if fileSize > 0 {
-		c.Header("Content-Length", fmt.Sprintf("%d", fileSize))
+		fileName := fmt.Sprintf("%s.zip", share.File.FileName)
+		encodedFileName := url.PathEscape(fileName)
+		contentDisposition := fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`, encodedFileName, encodedFileName)
+
+		c.Header("Content-Disposition", contentDisposition)
+		c.Header("Content-Type", "application/zip")
+
+		_, err = io.Copy(c.Writer, reader)
+		if err != nil {
+			logger.Error("DownloadSharedContent: 流式传输文件夹ZIP内容失败", zap.String("uuid", shareUUID), zap.Error(err))
+		}
+		return
 	}
 
-	_, err = io.Copy(c.Writer, reader)
+	// 如果是单个文件，则生成预签名URL并重定向
+	presignedURL, err := h.shareService.GetSharedFilePresignedURL(c.Request.Context(), share)
 	if err != nil {
-		logger.Error("DownloadSharedContent: 流式传输文件内容失败", zap.String("uuid", shareUUID), zap.Error(err))
+		logger.Error("DownloadSharedContent: 生成预签名URL失败", zap.String("uuid", shareUUID), zap.Error(err))
+		response.Error(c, http.StatusInternalServerError, xerr.StorageErrorCode, "获取文件下载链接失败")
+		return
 	}
+
+	c.Redirect(http.StatusFound, presignedURL)
 }
 
 // ListUserShares handles listing all share links created by the authenticated user.

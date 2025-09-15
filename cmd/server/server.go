@@ -62,10 +62,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	//  初始化 Repositories
 	redisCache := cache.NewRedisCache(redisClient)
 	dbFileRepo := repositories.NewDBFileRepository(mysqlDB)
-	fileRepo := repositories.NewCachedFileRepository(dbFileRepo, redisCache)
+	cacheFileRepo := repositories.NewCachedFileRepository(dbFileRepo, redisCache)
+	fileRepo := repositories.NewCachedFileRepository(cacheFileRepo, redisCache)
 	userRepo := repositories.NewUserRepository(mysqlDB)
 	share_repo := repositories.NewShareRepository(mysqlDB)
 	fileVersionRepo := repositories.NewFileVersionRepository(mysqlDB)
+	uploadRepo := repositories.NewDBMultipartUploadRepository(mysqlDB)
 
 	//初始化其他服务
 	cacheService := cache.NewRedisCache(redisClient)
@@ -76,12 +78,12 @@ func NewServer(cfg *config.Config) (*Server, error) {
 	}
 
 	//  初始化 Services
-	uploadService := explorer.NewUploadService(fileRepo, fileVersionRepo, tm, ss, explorer.UploadServiceDeps{
+	domainService := explorer.NewFileDomainService(fileRepo)
+	uploadService := explorer.NewUploadService(fileRepo, fileVersionRepo, uploadRepo, domainService, tm, ss, explorer.UploadServiceDeps{
 		Cache:    cacheService,
 		MQClient: rabbitMQClient,
 		Config:   cfg,
 	})
-	domainService := explorer.NewFileDomainService(fileRepo)
 	authService := admin.NewAuthService(userRepo, &cfg.JWT)
 	fileService := explorer.NewFileService(fileRepo, fileVersionRepo, domainService, tm, ss, rabbitMQClient, cfg)
 	shareService := share.NewShareService(share_repo, fileRepo, fileService, domainService, cfg)

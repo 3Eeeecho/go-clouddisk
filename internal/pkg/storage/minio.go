@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"strings"
 	"time"
 
@@ -198,9 +199,14 @@ func (s *MinIOStorageService) GetObjectURL(bucketName, objectName string) string
 	return fmt.Sprintf("%s/%s/%s", endpoint, bucketName, objectName)
 }
 
-// PreSignGetObjectURL 为下载生成预签名URL (如果需要，MinIO支持)
-func (s *MinIOStorageService) PreSignGetObjectURL(ctx context.Context, bucketName, objectName string, expiry time.Duration) (string, error) {
-	presignedURL, err := s.client.Presign(ctx, "GET", bucketName, objectName, expiry, nil)
+// GeneratePresignedURL 为下载生成预签名URL
+func (s *MinIOStorageService) GeneratePresignedURL(ctx context.Context, bucketName, objectName, versionID string, expiry time.Duration) (string, error) {
+	reqParams := make(url.Values)
+	if versionID != "" {
+		reqParams.Set("versionId", versionID)
+	}
+
+	presignedURL, err := s.client.Presign(ctx, "GET", bucketName, objectName, expiry, reqParams)
 	if err != nil {
 		return "", fmt.Errorf("生成 MinIO 预签名URL失败: %w", err)
 	}

@@ -168,15 +168,20 @@ func (s *AliyunOSSStorageService) GetObjectURL(bucketName, objectName string) st
 	return fmt.Sprintf("%s%s.%s/%s", scheme, bucketName, endpoint, objectName)
 }
 
-// PreSignGetObjectURL 为下载生成预签名URL (Aliyun OSS 支持)
-func (s *AliyunOSSStorageService) PreSignGetObjectURL(ctx context.Context, bucketName, objectName string, expiry time.Duration) (string, error) {
+// GeneratePresignedURL 为下载生成预签名URL
+func (s *AliyunOSSStorageService) GeneratePresignedURL(ctx context.Context, bucketName, objectName, versionID string, expiry time.Duration) (string, error) {
 	bucket, err := s.client.Bucket(bucketName)
 	if err != nil {
 		return "", fmt.Errorf("获取OSS存储桶失败: %w", err)
 	}
 
+	options := []oss.Option{}
+	if versionID != "" {
+		options = append(options, oss.VersionId(versionID))
+	}
+
 	// SignURL 默认是 GET 方法
-	signedURL, err := bucket.SignURL(objectName, oss.HTTPGet, int64(expiry.Seconds()))
+	signedURL, err := bucket.SignURL(objectName, oss.HTTPGet, int64(expiry.Seconds()), options...)
 	if err != nil {
 		return "", fmt.Errorf("生成阿里云OSS预签名URL失败: %w", err)
 	}

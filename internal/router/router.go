@@ -77,17 +77,12 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			fileGroup.POST("/:file_id/versions/:version_id/restore", fileHandler.RestoreFileVersion)
 		}
 
-		// 分享相关路由
-		shareGroup := authenticated.Group("/shares")
+		// 分享相关路由 (需要认证)
+		shareAuthGroup := authenticated.Group("/shares")
 		{
-
-			shareGroup.GET("/:share_uuid/details", shareHandler.GetShareDetails)
-			shareGroup.POST("/:share_uuid/verify", shareHandler.VerifySharePassword)
-			shareGroup.GET("/:share_uuid/download", shareHandler.DownloadSharedContent)
-
-			shareGroup.POST("/", shareHandler.CreateShare)
-			shareGroup.GET("/my", shareHandler.ListUserShares)
-			shareGroup.DELETE("/:share_id", shareHandler.RevokeShare)
+			shareAuthGroup.POST("/", shareHandler.CreateShare)
+			shareAuthGroup.GET("/my", shareHandler.ListUserShares)
+			shareAuthGroup.DELETE("/:share_id", shareHandler.RevokeShare)
 		}
 
 		// 注册断点续传路由
@@ -97,6 +92,14 @@ func InitRouter(authHandler *handlers.AuthHandler,
 			uploadRoutes.POST("/chunk", uploadHandler.UploadChunkHandler)
 			uploadRoutes.POST("/complete", uploadHandler.CompleteUploadHandler)
 		}
+	}
+
+	// 公开的分享链接路由 (无需认证)
+	sharePublicGroup := router.Group("/share")
+	{
+		sharePublicGroup.GET("/:share_uuid/details", shareHandler.GetShareDetails)
+		sharePublicGroup.POST("/:share_uuid/verify", shareHandler.VerifySharePassword)
+		sharePublicGroup.GET("/:share_uuid/download", shareHandler.DownloadSharedContent)
 	}
 
 	router.NoRoute(func(c *gin.Context) {

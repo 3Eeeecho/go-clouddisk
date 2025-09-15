@@ -1,6 +1,9 @@
 package repositories
 
-import "github.com/3Eeeecho/go-clouddisk/internal/models"
+import (
+	"github.com/3Eeeecho/go-clouddisk/internal/models"
+	"gorm.io/gorm"
+)
 
 // FileRepository defines the interface for file data access.
 type FileRepository interface {
@@ -18,6 +21,6 @@ type FileRepository interface {
 	UpdateFilesPathInBatch(userID uint64, oldPathPrefix, newPathPrefix string) error
 	Update(file *models.File) error
 	SoftDelete(id uint64) error
-	PermanentDelete(fileID uint64) error
+	PermanentDelete(tx *gorm.DB, fileID uint64) error
 	UpdateFileStatus(fileID uint64, status uint8) error
 }

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strconv"
 
 	"github.com/3Eeeecho/go-clouddisk/internal/config"
@@ -179,38 +178,27 @@ func (h *FileHandler) DownloadFile(c *gin.Context) {
 		return
 	}
 
-	file, reader, err := h.fileService.Download(c.Request.Context(), currentUserID, fileID)
+	// 对于单个文件，生成预签名URL并重定向
+	presignedURL, err := h.fileService.GetPresignedURLForDownload(c.Request.Context(), currentUserID, fileID)
 	if err != nil {
 		if errors.Is(err, xerr.ErrFileNotFound) {
 			response.Error(c, http.StatusNotFound, xerr.FileNotFoundCode, err.Error())
 		} else if errors.Is(err, xerr.ErrPermissionDenied) {
 			response.Error(c, http.StatusForbidden, xerr.PermissionDeniedCode, err.Error())
-		} else if errors.Is(err, xerr.ErrCannotDownloadFolder) {
-			response.Error(c, http.StatusBadRequest, xerr.CannotDownloadFolderCode, err.Error())
+		} else if errors.Is(err, xerr.ErrTargetNotFolder) {
+			// 如果用户尝试用文件下载接口下载文件夹，这里会报错
+			response.Error(c, http.StatusBadRequest, xerr.TargetNotFolderCode, "Folders cannot be downloaded via this endpoint, please use the folder download endpoint.")
 		} else {
-			logger.Error("DownloadFile: Failed to download file", zap.Uint64("fileID", fileID), zap.Error(err))
-			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to download file")
+			logger.Error("DownloadFile: Failed to generate presigned URL", zap.Uint64("fileID", fileID), zap.Error(err))
+			response.Error(c, http.StatusInternalServerError, xerr.InternalServerErrorCode, "Failed to get download link")
 		}
 		return
 	}
-	defer reader.Close()
 
-	contentDisposition := fmt.Sprintf(`attachment; filename="%s"; filename*=UTF-8''%s`,
-		url.PathEscape(file.FileName),
-		url.PathEscape(file.FileName),
-	)
-	c.Header("Content-Disposition", contentDisposition)
-	if file.MimeType != nil {
-		c.Header("Content-Type", *file.MimeType)
-	} else {
-		c.Header("Content-Type", "application/octet-stream")
-	}
-	c.Header("Content-Length", fmt.Sprintf("%d", file.Size))
-
-	_, err = io.Copy(c.Writer, reader)
-	if err != nil {
-		logger.Error("DownloadFile: Failed to stream file content", zap.Uint64("fileID", fileID), zap.Error(err))
-	}
+	// 返回302重定向
+	response.Success(c, http.StatusOK, "Presigned URL generated successfully", gin.H{
+		"url": presignedURL,
+	})
 }
 
 // @Summary 下载文件夹
